@@ -41,6 +41,10 @@ bot:
 # ask  = confirm everything
 default_mode: auto
 
+# Number of tool_use messages to batch into one message (default: 15)
+# Set to 1 to disable batching (send each tool call as a separate message)
+tool_batch_size: 15
+
 skills:
   shared_dir: ./skills          # Local skills directory to sync to remotes
   sync_on_start: true           # Sync skills when /start creates a session

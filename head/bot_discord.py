@@ -21,7 +21,7 @@ from .ssh_manager import SSHManager
 from .session_router import SessionRouter
 from .daemon_client import DaemonClient, DaemonError, DaemonConnectionError
 from .bot_base import BotBase
-from .message_formatter import split_message, format_error, display_mode
+from .message_formatter import split_message, compress_tool_messages, format_error, display_mode
 from .file_pool import FilePool, FileEntry
 
 logger = logging.getLogger(__name__)
@@ -525,6 +525,8 @@ class DiscordBot(BotBase):
             current_msg: Any = None
             last_update = time.time()
             tool_msgs: list[str] = []
+            tool_batch: list[dict] = []  # Accumulated tool events for batching
+            tool_batch_size = self.config.tool_batch_size
 
             async for event in self.daemon.send_message(
                 local_port, session.daemon_session_id, text
@@ -535,6 +537,13 @@ class DiscordBot(BotBase):
                 # Ignore keepalive pings from daemon
                 if event_type == "ping":
                     continue
+
+                # Flush tool batch before any non-tool event
+                if event_type != "tool_use" and tool_batch:
+                    batch_text = compress_tool_messages(tool_batch)
+                    tool_msgs.append(batch_text)
+                    await self.send_message(channel_id, batch_text)
+                    tool_batch = []
 
                 if event_type == "partial":
                     content = event.get("content", "")
@@ -572,9 +581,13 @@ class DiscordBot(BotBase):
                 elif event_type == "tool_use":
                     tool_name = event.get("tool", "unknown")
                     event_tracker["tool_name"] = tool_name
-                    tool_text = self._format_tool_use(event)
-                    tool_msgs.append(tool_text)
-                    await self.send_message(channel_id, tool_text)
+                    # Accumulate tool events; flush when batch is full
+                    tool_batch.append(event)
+                    if len(tool_batch) >= tool_batch_size:
+                        batch_text = compress_tool_messages(tool_batch)
+                        tool_msgs.append(batch_text)
+                        await self.send_message(channel_id, batch_text)
+                        tool_batch = []
 
                 elif event_type == "result":
                     sdk_session_id = event.get("session_id")
@@ -606,6 +619,13 @@ class DiscordBot(BotBase):
                 elif event_type == "error":
                     error_msg = event.get("message", "Unknown error")
                     await self.send_message(channel_id, format_error(error_msg))
+
+            # Flush remaining tool batch
+            if tool_batch:
+                batch_text = compress_tool_messages(tool_batch)
+                tool_msgs.append(batch_text)
+                await self.send_message(channel_id, batch_text)
+                tool_batch = []
 
             # Flush remaining buffer
             if buffer:

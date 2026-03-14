@@ -84,6 +84,7 @@ class Config:
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     daemon: DaemonDeployConfig = field(default_factory=DaemonDeployConfig)
     file_pool: FilePoolConfig = field(default_factory=FilePoolConfig)
+    tool_batch_size: int = 15  # Number of tool_use messages to batch into one
 
 
 def expand_env_vars(value: str) -> str:
@@ -165,6 +166,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
 
     # Parse other config
     config.default_mode = raw.get("default_mode", "auto")
+    config.tool_batch_size = int(raw.get("tool_batch_size", 15))
 
     skills_raw: dict[str, Any] = raw.get("skills", {})
     if skills_raw:

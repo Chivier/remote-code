@@ -18,6 +18,7 @@ from .daemon_client import DaemonClient, DaemonError, DaemonConnectionError
 from .message_formatter import (
     split_message,
     format_tool_use,
+    compress_tool_messages,
     format_machine_list,
     format_session_list,
     format_error,
@@ -544,6 +545,8 @@ After `/start` or `/resume`, send any message to interact with Claude."""
             current_msg: Any = None
             last_update = time.time()
             tool_msgs: list[str] = []
+            tool_batch: list[dict] = []  # Accumulated tool events for batching
+            tool_batch_size = self.config.tool_batch_size
 
             async for event in self.daemon.send_message(
                 local_port, session.daemon_session_id, text
@@ -553,6 +556,13 @@ After `/start` or `/resume`, send any message to interact with Claude."""
                 # Ignore keepalive pings from daemon
                 if event_type == "ping":
                     continue
+
+                # Flush tool batch before any non-tool event
+                if event_type != "tool_use" and tool_batch:
+                    batch_text = compress_tool_messages(tool_batch)
+                    tool_msgs.append(batch_text)
+                    await self.send_message(channel_id, batch_text)
+                    tool_batch = []
 
                 if event_type == "partial":
                     # Streaming text delta
@@ -592,10 +602,13 @@ After `/start` or `/resume`, send any message to interact with Claude."""
                                 await self.send_message(channel_id, chunk)
 
                 elif event_type == "tool_use":
-                    # Tool invocation
-                    tool_text = format_tool_use(event)
-                    tool_msgs.append(tool_text)
-                    await self.send_message(channel_id, tool_text)
+                    # Accumulate tool events; flush when batch is full
+                    tool_batch.append(event)
+                    if len(tool_batch) >= tool_batch_size:
+                        batch_text = compress_tool_messages(tool_batch)
+                        tool_msgs.append(batch_text)
+                        await self.send_message(channel_id, batch_text)
+                        tool_batch = []
 
                 elif event_type == "result":
                     # Claude finished
@@ -624,6 +637,13 @@ After `/start` or `/resume`, send any message to interact with Claude."""
                 elif event_type == "error":
                     error_msg = event.get("message", "Unknown error")
                     await self.send_message(channel_id, format_error(error_msg))
+
+            # Flush remaining tool batch
+            if tool_batch:
+                batch_text = compress_tool_messages(tool_batch)
+                tool_msgs.append(batch_text)
+                await self.send_message(channel_id, batch_text)
+                tool_batch = []
 
             # Flush remaining buffer
             if buffer:

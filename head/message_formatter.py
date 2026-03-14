@@ -274,6 +274,42 @@ def format_monitor(machine_id: str, monitor: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip()
 
 
+def compress_tool_messages(events: list[dict[str, Any]]) -> str:
+    """
+    Compress multiple tool_use events into a single message.
+
+    Each tool is shown as a compact one-liner. Tool input/message is truncated
+    to keep the combined message readable.
+
+    Args:
+        events: List of tool_use event dicts with 'tool', 'message', 'input' keys.
+
+    Returns:
+        A single formatted string summarizing all tool calls.
+    """
+    if not events:
+        return ""
+    if len(events) == 1:
+        return format_tool_use(events[0])
+
+    lines = [f"**[Tools: {len(events)} calls]**"]
+    for e in events:
+        tool = e.get("tool", "unknown")
+        message = e.get("message", "")
+        input_data = e.get("input")
+
+        if message:
+            detail = _truncate(message, 120)
+            lines.append(f"  `{tool}` — {detail}")
+        elif input_data:
+            detail = _truncate(str(input_data), 120)
+            lines.append(f"  `{tool}` — {detail}")
+        else:
+            lines.append(f"  `{tool}`")
+
+    return "\n".join(lines)
+
+
 def _truncate(text: str, max_len: int) -> str:
     """Truncate text with ellipsis."""
     if len(text) <= max_len:

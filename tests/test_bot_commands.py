@@ -114,6 +114,7 @@ def _make_session(**kwargs):
         "mode": "auto",
         "created_at": "2024-01-01T00:00:00",
         "updated_at": "2024-01-01T00:00:00",
+        "name": "bright-falcon",
     }
     defaults.update(kwargs)
     return Session(**defaults)
@@ -321,6 +322,20 @@ class TestCmdStatus:
         # Should still show status even if queue stats fail
         assert "Session Status" in msg
 
+    @pytest.mark.asyncio
+    async def test_status_shows_name(self, bot, mock_router):
+        name = mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        await bot.cmd_status("discord:100")
+        msg = bot.get_last_message()
+        assert f"Name: **{name}**" in msg
+
+    @pytest.mark.asyncio
+    async def test_status_shows_full_session_id(self, bot, mock_router):
+        mock_router.register("discord:100", "gpu-1", "/path", "sess-001-abcdef1234567890")
+        await bot.cmd_status("discord:100")
+        msg = bot.get_last_message()
+        assert "sess-001-abcdef1234567890" in msg  # Full ID
+
 
 # ─── handle_input ───
 
@@ -429,6 +444,12 @@ class TestHandleInput:
         msg = bot.get_last_message()
         assert msg is not None
 
+    @pytest.mark.asyncio
+    async def test_command_routing_rename(self, bot):
+        await bot.handle_input("discord:100", "/rename")
+        msg = bot.get_last_message()
+        assert "Usage:" in msg
+
 
 # ─── cmd_start ───
 
@@ -453,6 +474,18 @@ class TestCmdStart:
         assert any("Session started" in t for t in texts)
         assert any("bypass" in t for t in texts)  # default_mode="auto" -> display "bypass"
 
+    @pytest.mark.asyncio
+    async def test_start_shows_name(self, bot, mock_daemon):
+        await bot.cmd_start("discord:100", ["gpu-1", "/home/user/project"])
+        texts = bot.get_all_message_texts()
+        assert any("Name: **" in t for t in texts)  # Name field present
+
+    @pytest.mark.asyncio
+    async def test_start_shows_full_session_id(self, bot, mock_daemon):
+        await bot.cmd_start("discord:100", ["gpu-1", "/home/user/project"])
+        texts = bot.get_all_message_texts()
+        assert any("new-session-id-123456" in t for t in texts)  # Full ID, no truncation
+
 
 # ─── cmd_exit ───
 
@@ -471,6 +504,13 @@ class TestCmdExit:
         msg = bot.get_last_message()
         assert "Detached" in msg
         assert name in msg
+
+    @pytest.mark.asyncio
+    async def test_exit_shows_name_in_resume_hint(self, bot, mock_router):
+        name = mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        await bot.cmd_exit("discord:100")
+        msg = bot.get_last_message()
+        assert f"/resume {name}" in msg
 
 
 # ─── cmd_ls ───
@@ -500,10 +540,133 @@ class TestCmdLs:
         assert "Sessions:" in msg
 
     @pytest.mark.asyncio
+    async def test_ls_sessions_shows_full_id(self, bot, mock_router):
+        mock_router.register("discord:100", "gpu-1", "/path", "sess-001-abcdef1234")
+        await bot.cmd_ls("discord:100", ["session"])
+        msg = bot.get_last_message()
+        assert "sess-001-abcdef1234" in msg  # Full ID
+
+    @pytest.mark.asyncio
+    async def test_ls_sessions_shows_name(self, bot, mock_router):
+        name = mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        await bot.cmd_ls("discord:100", ["session"])
+        msg = bot.get_last_message()
+        assert name in msg
+
+    @pytest.mark.asyncio
     async def test_ls_invalid_subcmd(self, bot):
         await bot.cmd_ls("discord:100", ["foobar"])
         msg = bot.get_last_message()
         assert "Usage:" in msg
+
+
+# ─── cmd_rename ───
+
+
+class TestCmdRename:
+    @pytest.mark.asyncio
+    async def test_rename_no_args(self, bot):
+        await bot.cmd_rename("discord:100", [])
+        msg = bot.get_last_message()
+        assert "Usage:" in msg
+
+    @pytest.mark.asyncio
+    async def test_rename_no_session(self, bot):
+        await bot.cmd_rename("discord:100", ["my-project"])
+        msg = bot.get_last_message()
+        assert "No active session" in msg
+
+    @pytest.mark.asyncio
+    async def test_rename_success(self, bot, mock_router):
+        old_name = mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        await bot.cmd_rename("discord:100", ["my-project"])
+        msg = bot.get_last_message()
+        assert "renamed" in msg
+        assert "my-project" in msg
+
+    @pytest.mark.asyncio
+    async def test_rename_invalid_name(self, bot, mock_router):
+        mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        await bot.cmd_rename("discord:100", ["INVALID"])
+        msg = bot.get_last_message()
+        assert "Invalid name" in msg
+
+    @pytest.mark.asyncio
+    async def test_rename_single_word_invalid(self, bot, mock_router):
+        mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        await bot.cmd_rename("discord:100", ["project"])
+        msg = bot.get_last_message()
+        assert "Invalid name" in msg
+
+    @pytest.mark.asyncio
+    async def test_rename_duplicate_fails(self, bot, mock_router):
+        name1 = mock_router.register("discord:100", "gpu-1", "/path1", "sess-001")
+        mock_router.register("discord:200", "gpu-1", "/path2", "sess-002")
+        await bot.cmd_rename("discord:200", [name1])
+        msg = bot.get_last_message()
+        assert "already in use" in msg
+
+    @pytest.mark.asyncio
+    async def test_rename_updates_session(self, bot, mock_router):
+        mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        await bot.cmd_rename("discord:100", ["my-project"])
+
+        session = mock_router.resolve("discord:100")
+        assert session.name == "my-project"
+
+    @pytest.mark.asyncio
+    async def test_rename_via_handle_input(self, bot, mock_router):
+        mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        await bot.handle_input("discord:100", "/rename my-project")
+        msg = bot.get_last_message()
+        assert "renamed" in msg
+
+    @pytest.mark.asyncio
+    async def test_help_includes_rename(self, bot):
+        await bot.cmd_help("discord:100")
+        msg = bot.get_last_message()
+        assert "/rename" in msg
+
+
+# ─── cmd_resume with name ───
+
+
+class TestCmdResumeWithName:
+    @pytest.mark.asyncio
+    async def test_resume_by_name(self, bot, mock_router, mock_daemon):
+        name = mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.detach("discord:100")
+
+        mock_daemon.resume_session = AsyncMock(return_value={"ok": True})
+        await bot.cmd_resume("discord:200", [name])
+        texts = bot.get_all_message_texts()
+        assert any("Resuming session" in t for t in texts)
+
+    @pytest.mark.asyncio
+    async def test_resume_by_id(self, bot, mock_router, mock_daemon):
+        mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.detach("discord:100")
+
+        mock_daemon.resume_session = AsyncMock(return_value={"ok": True})
+        await bot.cmd_resume("discord:200", ["sess-001"])
+        texts = bot.get_all_message_texts()
+        assert any("Resuming session" in t for t in texts)
+
+    @pytest.mark.asyncio
+    async def test_resume_not_found(self, bot):
+        await bot.cmd_resume("discord:100", ["nonexistent"])
+        msg = bot.get_last_message()
+        assert "not found" in msg
+
+    @pytest.mark.asyncio
+    async def test_resume_shows_name(self, bot, mock_router, mock_daemon):
+        name = mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.detach("discord:100")
+
+        mock_daemon.resume_session = AsyncMock(return_value={"ok": True})
+        await bot.cmd_resume("discord:200", [name])
+        texts = bot.get_all_message_texts()
+        assert any(f"**{name}**" in t for t in texts)
 
 
 # ─── cmd_interrupt ───
