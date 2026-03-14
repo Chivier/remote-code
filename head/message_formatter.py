@@ -7,6 +7,20 @@ import re
 from typing import Any
 
 
+# Display names for permission modes (user-facing)
+MODE_DISPLAY_NAMES = {
+    "auto": "bypass",
+    "code": "code",
+    "plan": "plan",
+    "ask": "ask",
+}
+
+
+def display_mode(mode: str) -> str:
+    """Convert internal mode name to display name."""
+    return MODE_DISPLAY_NAMES.get(mode, mode)
+
+
 def split_message(text: str, max_len: int = 2000) -> list[str]:
     """
     Split a long message into chunks that fit within platform limits.
@@ -105,18 +119,22 @@ def format_session_info(session: Any) -> str:
 
     if hasattr(session, "channel_id"):
         # Session from SessionRouter
+        mode_str = display_mode(session.mode)
         return (
             f"{status_icon} `{session.daemon_session_id[:8]}...` "
             f"**{session.machine_id}**:`{session.path}` "
-            f"[{session.mode}] ({session.status})"
+            f"[{mode_str}] ({session.status})"
         )
     else:
         # Session info dict from daemon
         sid = session.get("sessionId", "?")[:8]
+        mode_str = display_mode(session.get("mode", "?"))
+        model = session.get("model", "")
+        model_str = f" | {model}" if model else ""
         return (
             f"{status_icon} `{sid}...` "
             f"**{session.get('path', '?')}** "
-            f"[{session.get('mode', '?')}] ({session.get('status', '?')})"
+            f"[{mode_str}{model_str}] ({session.get('status', '?')})"
         )
 
 
@@ -157,11 +175,12 @@ def format_error(error: str) -> str:
 
 def format_status(session: Any, queue_stats: dict[str, Any] | None = None) -> str:
     """Format session status for /status command."""
+    mode_str = display_mode(session.mode)
     lines = [
         f"**Session Status**",
         f"Machine: **{session.machine_id}**",
         f"Path: `{session.path}`",
-        f"Mode: **{session.mode}**",
+        f"Mode: **{mode_str}**",
         f"Status: **{session.status}**",
         f"Session ID: `{session.daemon_session_id[:12]}...`",
     ]
@@ -174,6 +193,82 @@ def format_status(session: Any, queue_stats: dict[str, Any] | None = None) -> st
         lines.append(f"Buffered: {queue_stats.get('responsePending', 0)} responses")
 
     return "\n".join(lines)
+
+
+def format_health(machine_id: str, health: dict[str, Any]) -> str:
+    """Format daemon health check result."""
+    uptime_secs = health.get("uptime", 0)
+    hours, remainder = divmod(uptime_secs, 3600)
+    mins, secs = divmod(remainder, 60)
+    if hours > 0:
+        uptime_str = f"{hours}h{mins:02d}m{secs:02d}s"
+    elif mins > 0:
+        uptime_str = f"{mins}m{secs:02d}s"
+    else:
+        uptime_str = f"{secs}s"
+
+    status_counts = health.get("sessionsByStatus", {})
+    status_parts = [f"{k}: {v}" for k, v in status_counts.items()] if status_counts else ["none"]
+
+    memory = health.get("memory", {})
+    mem_str = f"{memory.get('rss', '?')}MB RSS, {memory.get('heapUsed', '?')}/{memory.get('heapTotal', '?')}MB heap"
+
+    lines = [
+        f"**Daemon Health - {machine_id}**",
+        f"Status: {'OK' if health.get('ok') else 'ERROR'}",
+        f"Uptime: {uptime_str}",
+        f"Sessions: {health.get('sessions', 0)} ({', '.join(status_parts)})",
+        f"Memory: {mem_str}",
+        f"Node: {health.get('nodeVersion', '?')} (PID: {health.get('pid', '?')})",
+    ]
+    return "\n".join(lines)
+
+
+def format_monitor(machine_id: str, monitor: dict[str, Any]) -> str:
+    """Format monitor.sessions result."""
+    sessions = monitor.get("sessions", [])
+    if not sessions:
+        return f"**Monitor - {machine_id}**: No active sessions."
+
+    uptime_secs = monitor.get("uptime", 0)
+    hours, remainder = divmod(uptime_secs, 3600)
+    mins, secs = divmod(remainder, 60)
+    if hours > 0:
+        uptime_str = f"{hours}h{mins:02d}m{secs:02d}s"
+    elif mins > 0:
+        uptime_str = f"{mins}m{secs:02d}s"
+    else:
+        uptime_str = f"{secs}s"
+
+    lines = [
+        f"**Monitor - {machine_id}** (uptime: {uptime_str}, {len(sessions)} session(s))",
+        "",
+    ]
+
+    for s in sessions:
+        sid = s.get("sessionId", "?")[:8]
+        status = s.get("status", "?")
+        mode_str = display_mode(s.get("mode", "?"))
+        model = s.get("model", "")
+        path = s.get("path", "?")
+        queue = s.get("queue", {})
+        user_pending = queue.get("userPending", 0)
+        resp_pending = queue.get("responsePending", 0)
+        connected = queue.get("clientConnected", False)
+
+        status_icon = {
+            "idle": "●", "busy": "◉", "error": "✕", "destroyed": "✕"
+        }.get(status, "?")
+
+        conn_icon = "connected" if connected else "**disconnected**"
+        model_str = f" | {model}" if model else ""
+
+        lines.append(f"{status_icon} `{sid}...` **{status}** [{mode_str}{model_str}]")
+        lines.append(f"  Path: `{path}`")
+        lines.append(f"  Client: {conn_icon} | Queue: {user_pending} pending, {resp_pending} buffered")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
 
 
 def _truncate(text: str, max_len: int) -> str:

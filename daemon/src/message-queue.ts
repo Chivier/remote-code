@@ -45,10 +45,12 @@ export class MessageQueue {
   // ─── Response Buffering (for SSH disconnect recovery) ───
 
   /**
-   * Buffer a response event when client is disconnected
+   * Buffer a response event when client is disconnected.
+   * Can be called with force=true to always buffer (e.g., from server.ts
+   * when it detects client disconnect mid-stream).
    */
-  bufferResponse(event: StreamEvent): void {
-    if (!this._clientConnected) {
+  bufferResponse(event: StreamEvent, force: boolean = false): void {
+    if (force || !this._clientConnected) {
       this.responsePending.push({ event, timestamp: Date.now() });
     }
   }

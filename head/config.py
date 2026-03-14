@@ -19,6 +19,8 @@ class MachineConfig:
     ssh_key: Optional[str] = None
     port: int = 22
     proxy_jump: Optional[str] = None
+    proxy_command: Optional[str] = None  # SSH ProxyCommand string
+    password: Optional[str] = None  # SSH password (or path prefixed with 'file:')
     daemon_port: int = 9100
     node_path: Optional[str] = None
     default_paths: list[str] = field(default_factory=list)
@@ -117,6 +119,8 @@ def load_config(config_path: str = "config.yaml") -> Config:
             ssh_key=expand_path(md["ssh_key"]) if "ssh_key" in md else None,
             port=md.get("port", 22),
             proxy_jump=md.get("proxy_jump"),
+            proxy_command=md.get("proxy_command"),
+            password=md.get("password"),
             daemon_port=md.get("daemon_port", 9100),
             node_path=md.get("node_path"),
             default_paths=md.get("default_paths", []),

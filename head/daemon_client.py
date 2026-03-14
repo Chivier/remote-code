@@ -5,6 +5,7 @@ Sends JSON-RPC requests to the daemon's HTTP server and handles
 both regular JSON responses and SSE streaming responses.
 """
 
+import asyncio
 import json
 import logging
 from typing import Any, AsyncIterator, Optional
@@ -82,12 +83,19 @@ class DaemonClient:
         logger.info(f"Created session {session_id} at {path}")
         return session_id
 
-    async def send_message(self, local_port: int, session_id: str, message: str) -> AsyncIterator[dict[str, Any]]:
+    async def send_message(
+        self, local_port: int, session_id: str, message: str,
+        idle_timeout: int = 300,
+    ) -> AsyncIterator[dict[str, Any]]:
         """
         Send a message to a Claude session and stream back events.
 
         This uses SSE (Server-Sent Events) for streaming.
         Yields parsed event dicts.
+
+        Args:
+            idle_timeout: Max seconds to wait with no events before giving up.
+                          Resets on every received event. Default 5 minutes.
         """
         session = await self._get_session()
         payload = {
@@ -100,8 +108,8 @@ class DaemonClient:
                 self._url(local_port),
                 json=payload,
                 timeout=aiohttp.ClientTimeout(
-                    total=600,  # 10 minute timeout for long Claude responses
-                    sock_read=600,
+                    total=900,  # 15 minute total timeout
+                    sock_read=idle_timeout,  # per-read timeout (idle detection)
                 ),
             ) as resp:
                 # Read SSE stream
@@ -124,6 +132,8 @@ class DaemonClient:
                             logger.warning(f"Failed to parse SSE data: {data_str}")
                             continue
 
+        except asyncio.TimeoutError:
+            yield {"type": "error", "message": f"Stream idle timeout ({idle_timeout}s with no events). Session may be stuck."}
         except aiohttp.ClientError as e:
             yield {"type": "error", "message": f"Connection error: {e}"}
 
@@ -162,6 +172,10 @@ class DaemonClient:
         """Check daemon health."""
         return await self._rpc_call(local_port, "health.check")
 
+    async def monitor_sessions(self, local_port: int) -> dict[str, Any]:
+        """Get detailed monitoring info for all sessions."""
+        return await self._rpc_call(local_port, "monitor.sessions")
+
     async def reconnect_session(self, local_port: int, session_id: str) -> list[dict[str, Any]]:
         """Reconnect to a session and get buffered events."""
         result = await self._rpc_call(local_port, "session.reconnect", {
@@ -172,6 +186,19 @@ class DaemonClient:
     async def get_queue_stats(self, local_port: int, session_id: str) -> dict[str, Any]:
         """Get message queue stats for a session."""
         return await self._rpc_call(local_port, "session.queue_stats", {
+            "sessionId": session_id,
+        })
+
+    async def interrupt_session(self, local_port: int, session_id: str) -> dict[str, Any]:
+        """Interrupt the current Claude operation for a session.
+        
+        Sends SIGINT to the Claude CLI process to stop the current request.
+        The process stays alive for future messages.
+        
+        Returns:
+            dict with 'ok' and 'interrupted' (whether there was an active operation to interrupt).
+        """
+        return await self._rpc_call(local_port, "session.interrupt", {
             "sessionId": session_id,
         })
 

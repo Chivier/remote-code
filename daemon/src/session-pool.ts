@@ -1,5 +1,5 @@
 import { ChildProcess, spawn } from "child_process";
-import { createInterface, Interface as ReadlineInterface } from "readline";
+import { createInterface } from "readline";
 import { v4 as uuidv4 } from "uuid";
 import { existsSync } from "fs";
 import {
@@ -8,36 +8,41 @@ import {
   PermissionMode,
   StreamEvent,
   SessionInfo,
-  ClaudeStdinMessage,
   ClaudeStdoutMessage,
   modeToCliFlag,
 } from "./types";
 import { MessageQueue } from "./message-queue";
 
+/**
+ * Session state — no longer holds a long-lived process.
+ * Instead, each send() spawns a new `claude --print` process
+ * and uses --resume to maintain conversation context.
+ */
 interface InternalSession extends ManagedSession {
+  /** Currently running Claude process (only during message processing) */
   process: ChildProcess | null;
-  stdin: NodeJS.WritableStream | null;
-  stdoutReader: ReadlineInterface | null;
   queue: MessageQueue;
-  /** Listeners waiting for stream events */
-  streamListeners: Set<(event: StreamEvent) => void>;
   /** Whether we're currently processing a message */
   processing: boolean;
+  /** Model name reported by Claude CLI (extracted from init message) */
+  model: string | null;
 }
 
 /**
- * SessionPool manages multiple Claude CLI long-lived processes.
+ * SessionPool manages Claude CLI sessions using per-message spawn.
  *
- * Key design (from claude-cli-communication.md lessons):
- * - Uses Claude CLI with --input-format stream-json --output-format stream-json
- * - Keeps stdin OPEN for bidirectional communication (lesson #3: never close stdin)
- * - One long-lived process per session (lesson #1: don't spawn per message)
+ * Architecture change (2026-03-14):
+ * - Claude CLI 2.1.76 does not support --input-format stream-json without --print
+ * - We now spawn a fresh `claude --print <msg> --output-format stream-json` per message
+ * - Session continuity is maintained via --resume <sdkSessionId>
+ * - Each process lives only for the duration of one message exchange
  */
 export class SessionPool {
   private sessions: Map<string, InternalSession> = new Map();
 
   /**
-   * Create a new session: spawn a Claude CLI process at the given path
+   * Create a new session (lightweight — just registers session state).
+   * No Claude CLI process is spawned until a message is sent.
    */
   async create(path: string, mode: PermissionMode = "auto"): Promise<string> {
     // Validate path exists
@@ -47,30 +52,7 @@ export class SessionPool {
 
     const sessionId = uuidv4();
 
-    // Build CLI arguments
-    const args = [
-      "--input-format",
-      "stream-json",
-      "--output-format",
-      "stream-json",
-      "--include-partial-messages",
-      "--verbose",
-      ...modeToCliFlag(mode),
-    ];
-
-    console.log(`[SessionPool] Creating session ${sessionId} at ${path}`);
-    console.log(`[SessionPool] Command: claude ${args.join(" ")}`);
-
-    // Spawn Claude CLI as long-lived process
-    const child = spawn("claude", args, {
-      cwd: path,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        // Ensure Claude knows it's not in a TTY
-        TERM: "dumb",
-      },
-    });
+    console.log(`[SessionPool] Creating session ${sessionId} at ${path} (mode=${mode})`);
 
     const session: InternalSession = {
       sessionId,
@@ -80,78 +62,19 @@ export class SessionPool {
       sdkSessionId: null,
       createdAt: new Date(),
       lastActivityAt: new Date(),
-      process: child,
-      stdin: child.stdin,
-      stdoutReader: null,
+      process: null,
       queue: new MessageQueue(),
-      streamListeners: new Set(),
       processing: false,
+      model: null,
     };
 
-    // Set up stdout line reader
-    if (child.stdout) {
-      session.stdoutReader = createInterface({
-        input: child.stdout,
-        crlfDelay: Infinity,
-      });
-
-      session.stdoutReader.on("line", (line: string) => {
-        this.handleStdoutLine(sessionId, line);
-      });
-    }
-
-    // Handle stderr (log warnings/errors)
-    if (child.stderr) {
-      const stderrReader = createInterface({
-        input: child.stderr,
-        crlfDelay: Infinity,
-      });
-      stderrReader.on("line", (line: string) => {
-        console.error(`[Session ${sessionId}] stderr: ${line}`);
-      });
-    }
-
-    // Handle process exit
-    child.on("exit", (code, signal) => {
-      console.log(
-        `[Session ${sessionId}] Process exited: code=${code}, signal=${signal}`
-      );
-      session.status = "error";
-      session.process = null;
-      session.stdin = null;
-
-      // Notify all listeners of the exit
-      const exitEvent: StreamEvent = {
-        type: "error",
-        message: `Claude process exited (code=${code}, signal=${signal})`,
-      };
-      this.emitEvent(sessionId, exitEvent);
-    });
-
-    child.on("error", (err) => {
-      console.error(`[Session ${sessionId}] Process error:`, err);
-      session.status = "error";
-
-      const errorEvent: StreamEvent = {
-        type: "error",
-        message: `Claude process error: ${err.message}`,
-      };
-      this.emitEvent(sessionId, errorEvent);
-    });
-
     this.sessions.set(sessionId, session);
-
-    // Wait briefly for the process to start and check it's alive
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    if (session.status === "error") {
-      throw new Error("Claude process failed to start");
-    }
-
     return sessionId;
   }
 
   /**
-   * Send a message to a session's Claude process.
+   * Send a message to a session.
+   * Spawns a new Claude CLI process for this message.
    * Returns an async iterable of stream events.
    */
   async *send(
@@ -172,79 +95,193 @@ export class SessionPool {
   }
 
   /**
-   * Internal: process a single message through Claude
+   * Internal: process a single message by spawning a Claude CLI process.
+   *
+   * Invocation: claude --print <message> --output-format stream-json --verbose
+   *             [--resume <sdkSessionId>] [--dangerously-skip-permissions]
    */
   private async *processMessage(
     session: InternalSession,
     message: string
   ): AsyncGenerator<StreamEvent, void, unknown> {
-    if (!session.stdin || !session.process) {
-      throw new Error("Session process is not running");
-    }
-
     session.processing = true;
     session.status = "busy";
     session.lastActivityAt = new Date();
 
-    // Create a promise-based event queue for this request
+    // Build CLI arguments
+    const args = [
+      "--print",
+      message,
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      ...modeToCliFlag(session.mode),
+    ];
+
+    // Resume from previous conversation if we have a session ID
+    if (session.sdkSessionId) {
+      args.push("--resume", session.sdkSessionId);
+    }
+
+    console.log(`[SessionPool] Spawning claude for session ${session.sessionId}`);
+    console.log(`[SessionPool] Command: claude ${args.map(a => a.includes(' ') ? `"${a}"` : a).join(" ")}`);
+    console.log(`[SessionPool] CWD: ${session.path}`);
+
+    // Spawn Claude CLI process for this single message
+    const child = spawn("claude", args, {
+      cwd: session.path,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        TERM: "dumb",
+      },
+    });
+
+    session.process = child;
+
+    // Event queue for streaming events from stdout
     const eventQueue: StreamEvent[] = [];
     let resolveWait: (() => void) | null = null;
     let done = false;
 
-    const listener = (event: StreamEvent) => {
+    const pushEvent = (event: StreamEvent) => {
       eventQueue.push(event);
       if (resolveWait) {
         resolveWait();
         resolveWait = null;
       }
-      if (event.type === "result" || event.type === "error") {
-        done = true;
-      }
     };
 
-    session.streamListeners.add(listener);
+    // Set up stdout line reader (JSON-lines from Claude CLI)
+    if (child.stdout) {
+      const stdoutReader = createInterface({
+        input: child.stdout,
+        crlfDelay: Infinity,
+      });
+
+      stdoutReader.on("line", (line: string) => {
+        let parsed: ClaudeStdoutMessage;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          console.log(`[Session ${session.sessionId}] non-JSON stdout: ${line}`);
+          return;
+        }
+
+        // Extract model name from system init message
+        if (parsed.type === "system" && parsed.subtype === "init") {
+          const raw = parsed as any;
+          if (raw.model) {
+            session.model = raw.model;
+            console.log(`[Session ${session.sessionId}] Model: ${raw.model}`);
+          }
+        }
+
+        const event = this.convertToStreamEvent(parsed);
+        // Capture SDK session ID
+        if (event.session_id) {
+          session.sdkSessionId = event.session_id;
+        }
+
+        pushEvent(event);
+      });
+    }
+
+    // Handle stderr
+    if (child.stderr) {
+      const stderrReader = createInterface({
+        input: child.stderr,
+        crlfDelay: Infinity,
+      });
+      stderrReader.on("line", (line: string) => {
+        console.error(`[Session ${session.sessionId}] stderr: ${line}`);
+      });
+    }
+
+    // Handle process exit
+    child.on("exit", (code, signal) => {
+      console.log(
+        `[Session ${session.sessionId}] Process exited: code=${code}, signal=${signal}`
+      );
+
+      // Normal exit (code 0) after --print is expected — it means processing is done.
+      // Only emit error for abnormal exits.
+      if (code !== 0 && code !== null) {
+        pushEvent({
+          type: "error",
+          message: `Claude process exited abnormally (code=${code}, signal=${signal})`,
+        });
+      }
+
+      done = true;
+      // Wake up the yield loop if it's waiting
+      if (resolveWait) {
+        resolveWait();
+        resolveWait = null;
+      }
+    });
+
+    child.on("error", (err) => {
+      console.error(`[Session ${session.sessionId}] Process error:`, err);
+      pushEvent({
+        type: "error",
+        message: `Claude process error: ${err.message}`,
+      });
+      done = true;
+      if (resolveWait) {
+        resolveWait();
+        resolveWait = null;
+      }
+    });
+
+    // Close stdin immediately — --print mode reads the prompt from args, not stdin
+    if (child.stdin) {
+      child.stdin.end();
+    }
 
     try {
-      // Write message to Claude's stdin
-      const stdinMsg: ClaudeStdinMessage = {
-        type: "user_message",
-        content: message,
-      };
-      session.stdin.write(JSON.stringify(stdinMsg) + "\n");
-
       // Yield events as they arrive
-      while (!done) {
+      while (true) {
         if (eventQueue.length > 0) {
           const event = eventQueue.shift()!;
-
-          // Capture SDK session ID from result/system messages
-          if (event.session_id) {
-            session.sdkSessionId = event.session_id;
-          }
-
           yield event;
 
-          if (event.type === "result" || event.type === "error") {
+          // Terminal events
+          if (event.type === "result" || event.type === "error" || event.type === "interrupted") {
             break;
           }
+        } else if (done) {
+          // Process exited and queue is empty
+          break;
         } else {
-          // Wait for next event
+          // Wait for next event or process exit
           await new Promise<void>((resolve) => {
             resolveWait = resolve;
           });
         }
       }
     } finally {
-      session.streamListeners.delete(listener);
+      // Cleanup
+      session.process = null;
       session.processing = false;
-      session.status =
-        session.process && !session.process.killed ? "idle" : "error";
+      session.status = "idle";
+
+      // Kill process if still alive (e.g. on error/interrupt)
+      if (child && !child.killed) {
+        try {
+          child.kill("SIGTERM");
+          setTimeout(() => {
+            if (!child.killed) child.kill("SIGKILL");
+          }, 3000);
+        } catch {
+          // ignore
+        }
+      }
 
       // Process next queued message if any
       if (session.queue.hasUserPending() && session.status === "idle") {
         const next = session.queue.dequeueUser();
         if (next) {
-          // Process in background - don't yield from here
           this.processQueuedMessage(session, next.message);
         }
       }
@@ -253,7 +290,6 @@ export class SessionPool {
 
   /**
    * Process a queued message in the background.
-   * Events go to the queue's response buffer for later retrieval.
    */
   private async processQueuedMessage(
     session: InternalSession,
@@ -262,11 +298,10 @@ export class SessionPool {
     try {
       const gen = this.processMessage(session, message);
       for await (const event of gen) {
-        // If client is disconnected, buffer the response
         if (!session.queue.clientConnected) {
           session.queue.bufferResponse(event);
         }
-        // Otherwise events go to stream listeners (if any are attached)
+        // Otherwise events go to stream listeners (if any are attached via server SSE)
       }
     } catch (err) {
       console.error(
@@ -274,27 +309,6 @@ export class SessionPool {
         err
       );
     }
-  }
-
-  /**
-   * Handle a line from Claude CLI's stdout
-   */
-  private handleStdoutLine(sessionId: string, line: string): void {
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
-
-    let parsed: ClaudeStdoutMessage;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      // Not JSON, log it
-      console.log(`[Session ${sessionId}] non-JSON stdout: ${line}`);
-      return;
-    }
-
-    // Convert Claude CLI message to our StreamEvent format
-    const event = this.convertToStreamEvent(parsed);
-    this.emitEvent(sessionId, event);
   }
 
   /**
@@ -307,6 +321,7 @@ export class SessionPool {
           type: "system",
           subtype: msg.subtype,
           session_id: msg.session_id,
+          model: (msg as any).model,
           raw: msg,
         };
 
@@ -387,27 +402,8 @@ export class SessionPool {
   }
 
   /**
-   * Emit a stream event to all listeners of a session
-   */
-  private emitEvent(sessionId: string, event: StreamEvent): void {
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
-
-    for (const listener of session.streamListeners) {
-      try {
-        listener(event);
-      } catch (err) {
-        console.error(
-          `[Session ${sessionId}] Error in stream listener:`,
-          err
-        );
-      }
-    }
-  }
-
-  /**
-   * Resume a session with an existing SDK session ID.
-   * Implements CodePilot-style fallback strategy.
+   * Resume a session — in per-message mode, just update the sdkSessionId.
+   * The next send() will use --resume with this ID.
    */
   async resume(
     sessionId: string,
@@ -415,159 +411,27 @@ export class SessionPool {
   ): Promise<{ ok: boolean; fallback: boolean; newSessionId?: string }> {
     const session = this.sessions.get(sessionId);
 
-    if (session && session.process && session.status !== "error") {
-      // Session process is still alive, just reconnect
+    if (session) {
+      if (sdkSessionId) {
+        session.sdkSessionId = sdkSessionId;
+      }
       session.queue.onClientReconnect();
       return { ok: true, fallback: false };
-    }
-
-    // Process is dead, need to restart
-    // Try to resume with SDK session ID
-    if (session) {
-      const path = session.path;
-      const mode = session.mode;
-      const effectiveSdkId = sdkSessionId || session.sdkSessionId;
-
-      // Clean up old session
-      this.sessions.delete(sessionId);
-
-      // Create new process with --resume flag
-      const args = [
-        "--input-format",
-        "stream-json",
-        "--output-format",
-        "stream-json",
-        "--include-partial-messages",
-        "--verbose",
-        ...modeToCliFlag(mode),
-      ];
-
-      if (effectiveSdkId) {
-        args.push("--resume", effectiveSdkId);
-      }
-
-      try {
-        const child = spawn("claude", args, {
-          cwd: path,
-          stdio: ["pipe", "pipe", "pipe"],
-          env: { ...process.env, TERM: "dumb" },
-        });
-
-        const newSession: InternalSession = {
-          sessionId,
-          path,
-          mode,
-          status: "idle",
-          sdkSessionId: effectiveSdkId,
-          createdAt: session.createdAt,
-          lastActivityAt: new Date(),
-          process: child,
-          stdin: child.stdin,
-          stdoutReader: null,
-          queue: new MessageQueue(),
-          streamListeners: new Set(),
-          processing: false,
-        };
-
-        if (child.stdout) {
-          newSession.stdoutReader = createInterface({
-            input: child.stdout,
-            crlfDelay: Infinity,
-          });
-          newSession.stdoutReader.on("line", (line: string) => {
-            this.handleStdoutLine(sessionId, line);
-          });
-        }
-
-        if (child.stderr) {
-          const stderrReader = createInterface({
-            input: child.stderr,
-            crlfDelay: Infinity,
-          });
-          stderrReader.on("line", (line: string) => {
-            console.error(`[Session ${sessionId}] stderr: ${line}`);
-          });
-        }
-
-        child.on("exit", (code, signal) => {
-          console.log(
-            `[Session ${sessionId}] Process exited: code=${code}, signal=${signal}`
-          );
-          newSession.status = "error";
-          newSession.process = null;
-          newSession.stdin = null;
-          this.emitEvent(sessionId, {
-            type: "error",
-            message: `Claude process exited (code=${code}, signal=${signal})`,
-          });
-        });
-
-        child.on("error", (err) => {
-          console.error(`[Session ${sessionId}] Process error:`, err);
-          newSession.status = "error";
-          this.emitEvent(sessionId, {
-            type: "error",
-            message: `Claude process error: ${err.message}`,
-          });
-        });
-
-        this.sessions.set(sessionId, newSession);
-
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        if (newSession.status === "error") {
-          throw new Error("Resume failed - Claude process died");
-        }
-
-        return { ok: true, fallback: false };
-      } catch (err) {
-        // Resume failed - fallback: start fresh session
-        console.warn(
-          `[Session ${sessionId}] Resume failed, starting fresh:`,
-          err
-        );
-        try {
-          const newId = await this.create(path, mode);
-          // Move session to keep the same sessionId
-          const freshSession = this.sessions.get(newId)!;
-          this.sessions.delete(newId);
-          freshSession.sessionId = sessionId;
-          freshSession.sdkSessionId = null;
-          this.sessions.set(sessionId, freshSession);
-          return { ok: true, fallback: true, newSessionId: sessionId };
-        } catch (createErr) {
-          console.error(
-            `[Session ${sessionId}] Fallback create also failed:`,
-            createErr
-          );
-          return { ok: false, fallback: true };
-        }
-      }
     }
 
     return { ok: false, fallback: false };
   }
 
   /**
-   * Destroy a session: kill the Claude process and clean up
+   * Destroy a session: kill any running Claude process and clean up
    */
   async destroy(sessionId: string): Promise<boolean> {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
 
-    // Close stdin gracefully first
-    if (session.stdin) {
-      try {
-        session.stdin.end();
-      } catch {
-        // ignore
-      }
-    }
-
-    // Kill process
+    // Kill any running process
     if (session.process && !session.process.killed) {
       session.process.kill("SIGTERM");
-
-      // Force kill after 5 seconds
       setTimeout(() => {
         if (session.process && !session.process.killed) {
           session.process.kill("SIGKILL");
@@ -575,13 +439,7 @@ export class SessionPool {
       }, 5000);
     }
 
-    // Clean up readline
-    if (session.stdoutReader) {
-      session.stdoutReader.close();
-    }
-
     session.status = "destroyed";
-    session.streamListeners.clear();
     session.queue.clear();
 
     this.sessions.delete(sessionId);
@@ -591,106 +449,41 @@ export class SessionPool {
 
   /**
    * Set the permission mode for a session.
-   * Note: this requires restarting the Claude process since mode is a CLI flag.
+   * In per-message mode, just update the mode — next spawn will use it.
    */
   async setMode(
     sessionId: string,
     mode: PermissionMode
   ): Promise<boolean> {
     const session = this.getSession(sessionId);
-    const oldMode = session.mode;
-
-    if (oldMode === mode) return true;
-
-    // Need to restart the process with new flags
-    const path = session.path;
-    const sdkSessionId = session.sdkSessionId;
-
-    await this.destroy(sessionId);
-
-    // Recreate with new mode
-    const args = [
-      "--input-format",
-      "stream-json",
-      "--output-format",
-      "stream-json",
-      "--include-partial-messages",
-      "--verbose",
-      ...modeToCliFlag(mode),
-    ];
-
-    if (sdkSessionId) {
-      args.push("--resume", sdkSessionId);
-    }
-
-    const child = spawn("claude", args, {
-      cwd: path,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, TERM: "dumb" },
-    });
-
-    const newSession: InternalSession = {
-      sessionId,
-      path,
-      mode,
-      status: "idle",
-      sdkSessionId,
-      createdAt: new Date(),
-      lastActivityAt: new Date(),
-      process: child,
-      stdin: child.stdin,
-      stdoutReader: null,
-      queue: new MessageQueue(),
-      streamListeners: new Set(),
-      processing: false,
-    };
-
-    if (child.stdout) {
-      newSession.stdoutReader = createInterface({
-        input: child.stdout,
-        crlfDelay: Infinity,
-      });
-      newSession.stdoutReader.on("line", (line: string) => {
-        this.handleStdoutLine(sessionId, line);
-      });
-    }
-
-    if (child.stderr) {
-      const stderrReader = createInterface({
-        input: child.stderr,
-        crlfDelay: Infinity,
-      });
-      stderrReader.on("line", (line: string) => {
-        console.error(`[Session ${sessionId}] stderr: ${line}`);
-      });
-    }
-
-    child.on("exit", (code, signal) => {
-      newSession.status = "error";
-      newSession.process = null;
-      newSession.stdin = null;
-      this.emitEvent(sessionId, {
-        type: "error",
-        message: `Claude process exited (code=${code}, signal=${signal})`,
-      });
-    });
-
-    child.on("error", (err) => {
-      newSession.status = "error";
-      this.emitEvent(sessionId, {
-        type: "error",
-        message: `Claude process error: ${err.message}`,
-      });
-    });
-
-    this.sessions.set(sessionId, newSession);
-
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    return newSession.status !== "error";
+    session.mode = mode;
+    console.log(`[SessionPool] Mode changed to ${mode} for session ${sessionId}`);
+    return true;
   }
 
   /**
-   * Get session info (without internal process details)
+   * Interrupt the current Claude operation for a session.
+   * Sends SIGINT to the running Claude CLI process.
+   */
+  interrupt(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+
+    if (!session.processing || !session.process || session.process.killed) {
+      return false;
+    }
+
+    console.log(`[SessionPool] Interrupting session ${sessionId}`);
+    session.process.kill("SIGTERM"); // Kill the --print process
+    session.queue.clear();
+
+    return true;
+  }
+
+  /**
+   * Get session info
    */
   getSessionInfo(sessionId: string): SessionInfo {
     const session = this.getSession(sessionId);
@@ -700,6 +493,7 @@ export class SessionPool {
       status: session.status,
       mode: session.mode,
       sdkSessionId: session.sdkSessionId,
+      model: session.model,
       createdAt: session.createdAt.toISOString(),
       lastActivityAt: session.lastActivityAt.toISOString(),
     };
@@ -715,6 +509,7 @@ export class SessionPool {
       status: s.status,
       mode: s.mode,
       sdkSessionId: s.sdkSessionId,
+      model: s.model,
       createdAt: s.createdAt.toISOString(),
       lastActivityAt: s.lastActivityAt.toISOString(),
     }));
@@ -727,6 +522,16 @@ export class SessionPool {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.queue.onClientDisconnect();
+    }
+  }
+
+  /**
+   * Buffer a single event for a session
+   */
+  bufferEvent(sessionId: string, event: StreamEvent): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.queue.bufferResponse(event, true);
     }
   }
 

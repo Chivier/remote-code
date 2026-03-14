@@ -188,7 +188,7 @@ class TelegramBot(BotBase):
 
         # Register command handlers
         command_names = ["start", "resume", "ls", "list", "exit", "rm", "remove",
-                         "destroy", "mode", "status", "help"]
+                         "destroy", "mode", "status", "health", "monitor", "help"]
         for cmd in command_names:
             self._app.add_handler(CommandHandler(cmd, self._handle_telegram_command))
 

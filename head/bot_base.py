@@ -22,6 +22,9 @@ from .message_formatter import (
     format_session_list,
     format_error,
     format_status,
+    format_health,
+    format_monitor,
+    display_mode,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,6 +116,12 @@ class BotBase(ABC):
                 await self.cmd_mode(channel_id, args)
             elif cmd == "/status":
                 await self.cmd_status(channel_id)
+            elif cmd == "/interrupt":
+                await self.cmd_interrupt(channel_id)
+            elif cmd == "/health":
+                await self.cmd_health(channel_id, args)
+            elif cmd == "/monitor":
+                await self.cmd_monitor(channel_id, args)
             elif cmd == "/help":
                 await self.cmd_help(channel_id)
             else:
@@ -127,7 +136,7 @@ class BotBase(ABC):
 
     # ─── Commands ───
 
-    async def cmd_start(self, channel_id: str, args: list[str]) -> None:
+    async def cmd_start(self, channel_id: str, args: list[str], silent_init: bool = False) -> None:
         """/start <machine> <path> - Create a new session."""
         if len(args) < 2:
             await self.send_message(
@@ -139,7 +148,8 @@ class BotBase(ABC):
         machine_id = args[0]
         path = args[1]
 
-        await self.send_message(channel_id, f"Starting session on **{machine_id}**:`{path}`...")
+        if not silent_init:
+            await self.send_message(channel_id, f"Starting session on **{machine_id}**:`{path}`...")
 
         # Ensure SSH tunnel
         local_port = await self.ssh.ensure_tunnel(machine_id)
@@ -161,7 +171,7 @@ class BotBase(ABC):
             channel_id,
             f"Session started on **{machine_id}**:`{path}`\n"
             f"Session ID: `{daemon_session_id[:12]}...`\n"
-            f"Mode: **{self.config.default_mode}**\n\n"
+            f"Mode: **{display_mode(self.config.default_mode)}**\n\n"
             f"Send messages to interact with Claude."
         )
 
@@ -278,7 +288,7 @@ class BotBase(ABC):
             await self.send_message(
                 channel_id,
                 "Usage: `/mode <auto|code|plan|ask>`\n"
-                "  **auto** - Full auto (bypassPermissions)\n"
+                "  **auto (bypass)** - Full auto (skip all permissions)\n"
                 "  **code** - Auto accept edits, confirm bash\n"
                 "  **plan** - Read-only analysis\n"
                 "  **ask** - Confirm everything"
@@ -286,8 +296,11 @@ class BotBase(ABC):
             return
 
         mode = args[0].lower()
+        # Accept both internal and display names
+        if mode == "bypass":
+            mode = "auto"
         if mode not in ("auto", "code", "plan", "ask"):
-            await self.send_message(channel_id, "Invalid mode. Use: `auto`, `code`, `plan`, or `ask`")
+            await self.send_message(channel_id, "Invalid mode. Use: `auto` (bypass), `code`, `plan`, or `ask`")
             return
 
         session = self.router.resolve(channel_id)
@@ -300,7 +313,7 @@ class BotBase(ABC):
 
         if ok:
             self.router.update_mode(channel_id, mode)
-            await self.send_message(channel_id, f"Mode set to **{mode}**")
+            await self.send_message(channel_id, f"Mode set to **{display_mode(mode)}**")
         else:
             await self.send_message(channel_id, format_error("Failed to set mode"))
 
@@ -322,6 +335,96 @@ class BotBase(ABC):
 
         await self.send_message(channel_id, format_status(session, queue_stats))
 
+    async def cmd_interrupt(self, channel_id: str) -> None:
+        """/interrupt - Interrupt Claude's current operation."""
+        session = self.router.resolve(channel_id)
+        if not session:
+            await self.send_message(channel_id, "No active session. Use `/start` first.")
+            return
+
+        try:
+            local_port = await self.ssh.ensure_tunnel(session.machine_id)
+            result = await self.daemon.interrupt_session(
+                local_port, session.daemon_session_id
+            )
+
+            if result.get("interrupted"):
+                await self.send_message(channel_id, "Interrupted Claude's current operation.")
+            else:
+                await self.send_message(channel_id, "Claude is not currently processing any request.")
+        except Exception as e:
+            await self.send_message(channel_id, format_error(f"Failed to interrupt: {e}"))
+
+    async def cmd_health(self, channel_id: str, args: list[str]) -> None:
+        """/health [machine] - Check daemon health on a machine."""
+        # Determine which machine to check
+        machine_id = None
+        if args:
+            machine_id = args[0]
+        else:
+            # Try current session's machine
+            session = self.router.resolve(channel_id)
+            if session:
+                machine_id = session.machine_id
+
+        if not machine_id:
+            # Check all connected machines
+            results: list[str] = []
+            for mid in self.config.machines:
+                port = self.ssh.get_local_port(mid)
+                if port:
+                    try:
+                        health = await self.daemon.health_check(port)
+                        results.append(format_health(mid, health))
+                    except Exception as e:
+                        results.append(f"**Daemon Health - {mid}**: Error - {e}")
+            if not results:
+                await self.send_message(channel_id, "No active tunnels. Use `/start` or specify a machine: `/health <machine>`")
+                return
+            await self.send_message(channel_id, "\n\n".join(results))
+            return
+
+        try:
+            local_port = await self.ssh.ensure_tunnel(machine_id)
+            health = await self.daemon.health_check(local_port)
+            await self.send_message(channel_id, format_health(machine_id, health))
+        except Exception as e:
+            await self.send_message(channel_id, format_error(f"Health check failed for {machine_id}: {e}"))
+
+    async def cmd_monitor(self, channel_id: str, args: list[str]) -> None:
+        """/monitor [machine] - Monitor sessions on a machine."""
+        machine_id = None
+        if args:
+            machine_id = args[0]
+        else:
+            session = self.router.resolve(channel_id)
+            if session:
+                machine_id = session.machine_id
+
+        if not machine_id:
+            # Monitor all connected machines
+            results: list[str] = []
+            for mid in self.config.machines:
+                port = self.ssh.get_local_port(mid)
+                if port:
+                    try:
+                        monitor = await self.daemon.monitor_sessions(port)
+                        results.append(format_monitor(mid, monitor))
+                    except Exception as e:
+                        results.append(f"**Monitor - {mid}**: Error - {e}")
+            if not results:
+                await self.send_message(channel_id, "No active tunnels. Use `/start` or specify a machine: `/monitor <machine>`")
+                return
+            await self.send_message(channel_id, "\n\n".join(results))
+            return
+
+        try:
+            local_port = await self.ssh.ensure_tunnel(machine_id)
+            monitor = await self.daemon.monitor_sessions(local_port)
+            await self.send_message(channel_id, format_monitor(machine_id, monitor))
+        except Exception as e:
+            await self.send_message(channel_id, format_error(f"Monitor failed for {machine_id}: {e}"))
+
     async def cmd_help(self, channel_id: str) -> None:
         """/help - Show available commands."""
         help_text = """**Remote Claude Commands:**
@@ -334,6 +437,8 @@ class BotBase(ABC):
 `/rm <machine> <path>` - Destroy a session
 `/mode <auto|code|plan|ask>` - Switch permission mode
 `/status` - Show current session info
+`/health [machine]` - Check daemon health
+`/monitor [machine]` - Monitor session details & queues
 `/help` - Show this help
 
 After `/start` or `/resume`, send any message to interact with Claude."""
@@ -371,6 +476,10 @@ After `/start` or `/resume`, send any message to interact with Claude."""
                 local_port, session.daemon_session_id, text
             ):
                 event_type = event.get("type", "")
+
+                # Ignore keepalive pings from daemon
+                if event_type == "ping":
+                    continue
 
                 if event_type == "partial":
                     # Streaming text delta
@@ -420,6 +529,16 @@ After `/start` or `/resume`, send any message to interact with Claude."""
                     sdk_session_id = event.get("session_id")
                     if sdk_session_id:
                         self.router.update_sdk_session(channel_id, sdk_session_id)
+
+                elif event_type == "system":
+                    # System event (init, etc.) - show model info on first connection
+                    model = event.get("model")
+                    if model and event.get("subtype") == "init":
+                        mode_str = display_mode(session.mode)
+                        await self.send_message(
+                            channel_id,
+                            f"Connected to **{model}** | Mode: **{mode_str}**"
+                        )
 
                 elif event_type == "queued":
                     position = event.get("position", "?")

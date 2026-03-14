@@ -56,6 +56,7 @@ export interface SessionInfo {
   status: SessionStatus;
   mode: PermissionMode;
   sdkSessionId: string | null;
+  model: string | null;
   createdAt: string;
   lastActivityAt: string;
 }
@@ -70,7 +71,9 @@ export type StreamEventType =
   | "queued"
   | "error"
   | "system"
-  | "partial";
+  | "partial"
+  | "ping"
+  | "interrupted";
 
 export interface StreamEvent {
   type: StreamEventType;
@@ -82,6 +85,7 @@ export interface StreamEvent {
   position?: number;
   message?: string;
   subtype?: string;
+  model?: string;
   // Raw data from Claude CLI for passthrough
   raw?: unknown;
 }
@@ -134,21 +138,50 @@ export interface SetModeParams {
   mode: PermissionMode;
 }
 
+export interface InterruptSessionParams {
+  sessionId: string;
+}
+
 export interface HealthCheckResult {
   ok: boolean;
   sessions: number;
+  sessionsByStatus: Record<string, number>;
+  uptime: number;
+  memory: {
+    rss: number;
+    heapUsed: number;
+    heapTotal: number;
+  };
+  nodeVersion: string;
+  pid: number;
+}
+
+export interface MonitorSessionDetail {
+  sessionId: string;
+  path: string;
+  status: SessionStatus;
+  mode: PermissionMode;
+  model: string | null;
+  sdkSessionId: string | null;
+  createdAt: string;
+  lastActivityAt: string;
+  queue: {
+    userPending: number;
+    responsePending: number;
+    clientConnected: boolean;
+  };
+}
+
+export interface MonitorSessionsResult {
+  sessions: MonitorSessionDetail[];
+  totalSessions: number;
   uptime: number;
 }
 
 // ─── Claude CLI JSON-lines Protocol Types ───
 
-/**
- * What we write to Claude CLI's stdin
- */
-export interface ClaudeStdinMessage {
-  type: "user_message";
-  content: string;
-}
+// Note: ClaudeStdinMessage removed — we now use --print mode (per-message spawn)
+// instead of stdin JSON-lines. Messages are passed as CLI arguments.
 
 /**
  * Raw message types from Claude CLI stdout (stream-json format)

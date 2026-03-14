@@ -79,6 +79,20 @@ class SSHManager:
             raise ValueError(f"Unknown machine: {machine_id}. Available: {list(self.machines.keys())}")
         return self.machines[machine_id]
 
+    def _resolve_password(self, machine: MachineConfig) -> Optional[str]:
+        """Resolve password from config. Supports 'file:/path' syntax."""
+        if not machine.password:
+            return None
+        pw = machine.password
+        if pw.startswith("file:"):
+            pw_path = Path(pw[5:]).expanduser()
+            if pw_path.exists():
+                return pw_path.read_text().strip()
+            else:
+                logger.warning(f"Password file not found: {pw_path}")
+                return None
+        return pw
+
     async def _connect_ssh(self, machine: MachineConfig) -> asyncssh.SSHClientConnection:
         """Establish SSH connection to a machine."""
         connect_kwargs: dict = {
@@ -91,16 +105,25 @@ class SSHManager:
         if machine.ssh_key:
             connect_kwargs["client_keys"] = [machine.ssh_key]
 
+        password = self._resolve_password(machine)
+        if password:
+            connect_kwargs["password"] = password
+
         if machine.proxy_jump:
             # Connect through jump host
             jump_machine = self._get_machine(machine.proxy_jump)
-            jump_conn = await asyncssh.connect(
-                host=jump_machine.host,
-                port=jump_machine.port,
-                username=jump_machine.user,
-                known_hosts=None,
-                client_keys=[jump_machine.ssh_key] if jump_machine.ssh_key else None,
-            )
+            jump_password = self._resolve_password(jump_machine)
+            jump_kwargs: dict = {
+                "host": jump_machine.host,
+                "port": jump_machine.port,
+                "username": jump_machine.user,
+                "known_hosts": None,
+            }
+            if jump_machine.ssh_key:
+                jump_kwargs["client_keys"] = [jump_machine.ssh_key]
+            if jump_password:
+                jump_kwargs["password"] = jump_password
+            jump_conn = await asyncssh.connect(**jump_kwargs)
             connect_kwargs["tunnel"] = jump_conn
 
         conn = await asyncssh.connect(**connect_kwargs)
@@ -151,7 +174,8 @@ class SSHManager:
         install_dir = self.config.daemon.install_dir
 
         # Check if daemon is already running
-        result = await conn.run(f"pgrep -f 'node.*remote-claude-daemon' || true")
+        # The process is: node dist/server.js (in install_dir)
+        result = await conn.run(f"pgrep -f 'node.*dist/server\\.js' || true")
         stdout = result.stdout.strip() if result.stdout else ""
 
         if stdout:
@@ -160,8 +184,10 @@ class SSHManager:
 
         logger.info(f"Daemon not running on {machine_id}, starting...")
 
-        # Check if daemon code exists on remote
-        check_result = await conn.run(f"test -f {install_dir}/dist/server.js && echo 'exists' || echo 'missing'")
+        # Check if daemon code exists on remote (both dist and node_modules)
+        check_result = await conn.run(
+            f"test -f {install_dir}/dist/server.js -a -d {install_dir}/node_modules && echo 'exists' || echo 'missing'"
+        )
         check_out = check_result.stdout.strip() if check_result.stdout else ""
 
         if check_out == "missing":
@@ -173,14 +199,25 @@ class SSHManager:
                     "Set daemon.auto_deploy: true or install manually."
                 )
 
-        # Determine node path
+        # Determine node path and build PATH with common binary locations
         node_cmd = machine.node_path or "node"
         log_file = self.config.daemon.log_file
 
-        # Start daemon
+        # Build a PATH that includes node bin dir, ~/.local/bin (for claude CLI), etc.
+        # This PATH is inherited by the daemon process and all its child processes
+        # (including claude CLI spawned by session-pool.ts)
+        extra_paths = []
+        if machine.node_path:
+            from pathlib import PurePosixPath
+            extra_paths.append(str(PurePosixPath(machine.node_path).parent))
+        extra_paths.append(f"/home/{machine.user}/.local/bin")
+        path_value = ":".join(extra_paths) + ":$PATH"
+
+        # Start daemon with enriched PATH
         start_cmd = (
             f"cd {install_dir} && "
             f"DAEMON_PORT={machine.daemon_port} "
+            f"PATH={path_value} "
             f"nohup {node_cmd} dist/server.js > {log_file} 2>&1 &"
         )
         await conn.run(start_cmd)
@@ -239,10 +276,20 @@ class SSHManager:
 
         # Install dependencies on remote
         node_cmd = machine.node_path or "node"
-        npm_cmd = node_cmd.replace("node", "npm") if machine.node_path else "npm"
+        # Derive npm path from node path: replace the last path component only
+        if machine.node_path:
+            from pathlib import PurePosixPath
+            node_bin_dir = str(PurePosixPath(machine.node_path).parent)
+            npm_cmd = f"{node_bin_dir}/npm"
+        else:
+            node_bin_dir = None
+            npm_cmd = "npm"
+
+        # Prepend node bin dir to PATH so npm can find node
+        path_prefix = f"export PATH={node_bin_dir}:$PATH && " if node_bin_dir else ""
 
         install_result = await conn.run(
-            f"cd {install_dir} && {npm_cmd} install --production 2>&1"
+            f"{path_prefix}cd {install_dir} && {npm_cmd} install --production 2>&1"
         )
         if install_result.exit_status != 0:
             stderr = install_result.stderr or install_result.stdout or ""
@@ -292,25 +339,37 @@ class SSHManager:
             logger.warning(f"Skills sync failed for {machine_id}:{remote_path}: {e}")
 
     async def list_machines(self) -> list[dict]:
-        """List all configured machines with their online status."""
+        """List all configured machines with their online status.
+        
+        Skips machines that are only used as jump hosts (proxy_jump targets).
+        """
+        # Find which machines are only used as jump hosts
+        jump_hosts = {m.proxy_jump for m in self.machines.values() if m.proxy_jump}
+
         results = []
         for machine_id, machine in self.machines.items():
+            # Skip pure jump hosts
+            if machine_id in jump_hosts and not machine.default_paths:
+                continue
+
             status = "unknown"
+            daemon_status = "unknown"
             try:
                 conn = await asyncio.wait_for(
                     self._connect_ssh(machine),
-                    timeout=5.0,
+                    timeout=15.0,
                 )
                 status = "online"
                 # Check if daemon is running
                 daemon_check = await conn.run(
-                    f"pgrep -f 'node.*remote-claude-daemon' > /dev/null 2>&1 && echo 'running' || echo 'stopped'"
+                    f"pgrep -f 'node.*dist/server\\.js' > /dev/null 2>&1 && echo 'running' || echo 'stopped'"
                 )
                 daemon_status = (daemon_check.stdout or "").strip()
                 conn.close()
-            except (asyncio.TimeoutError, OSError, asyncssh.Error):
+            except (asyncio.TimeoutError, OSError, asyncssh.Error) as e:
                 status = "offline"
                 daemon_status = "unknown"
+                logger.debug(f"list_machines: {machine_id} unreachable: {e}")
 
             results.append({
                 "id": machine_id,
