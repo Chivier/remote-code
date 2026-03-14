@@ -73,6 +73,22 @@ class TestRegisterAndResolve:
         assert s1.daemon_session_id == "sess-001"
         assert s2.daemon_session_id == "sess-002"
 
+    def test_register_returns_name(self, router):
+        name = router.register("discord:100", "gpu-1", "/path", "sess-001")
+        assert isinstance(name, str)
+        assert "-" in name  # Two words separated by hyphen
+
+    def test_register_assigns_name_to_session(self, router):
+        name = router.register("discord:100", "gpu-1", "/path", "sess-001")
+        session = router.resolve("discord:100")
+        assert session is not None
+        assert session.name == name
+
+    def test_register_generates_unique_names(self, router):
+        name1 = router.register("discord:100", "gpu-1", "/path1", "sess-001")
+        name2 = router.register("discord:200", "gpu-1", "/path2", "sess-002")
+        assert name1 != name2
+
 
 class TestUpdateSdkSession:
     def test_update_sdk_session(self, router):
@@ -132,6 +148,14 @@ class TestDetach:
         # Second detach should return None (no active session)
         result = router.detach("discord:100")
         assert result is None
+
+    def test_detach_preserves_name_in_log(self, router):
+        name = router.register("discord:100", "gpu-1", "/path", "sess-001")
+        router.detach("discord:100")
+
+        found = router.find_session_by_daemon_id("sess-001")
+        assert found is not None
+        assert found.name == name
 
 
 class TestDestroy:
@@ -240,6 +264,12 @@ class TestFindSessionByDaemonId:
         assert found is not None
         assert found.mode == "plan"
 
+    def test_find_preserves_name(self, router):
+        name = router.register("discord:100", "gpu-1", "/path", "sess-001")
+        found = router.find_session_by_daemon_id("sess-001")
+        assert found is not None
+        assert found.name == name
+
 
 class TestFindSessionsByMachinePath:
     def test_find_matching(self, router):
@@ -266,3 +296,164 @@ class TestFindSessionsByMachinePath:
 
         results = router.find_sessions_by_machine_path("gpu-1", "/path")
         assert len(results) == 2
+
+
+class TestRenameSession:
+    def test_rename_active_session(self, router):
+        router.register("discord:100", "gpu-1", "/path", "sess-001")
+        result = router.rename_session("discord:100", "my-project")
+        assert result is True
+
+        session = router.resolve("discord:100")
+        assert session is not None
+        assert session.name == "my-project"
+
+    def test_rename_no_active_session(self, router):
+        result = router.rename_session("discord:999", "my-project")
+        assert result is False
+
+    def test_rename_duplicate_name_fails(self, router):
+        name1 = router.register("discord:100", "gpu-1", "/path1", "sess-001")
+        router.register("discord:200", "gpu-1", "/path2", "sess-002")
+
+        # Try to rename second session to first session's name
+        result = router.rename_session("discord:200", name1)
+        assert result is False
+
+    def test_rename_same_name_succeeds(self, router):
+        name = router.register("discord:100", "gpu-1", "/path", "sess-001")
+        # Renaming to the same name should succeed
+        result = router.rename_session("discord:100", name)
+        assert result is True
+
+    def test_rename_updates_name(self, router):
+        router.register("discord:100", "gpu-1", "/path", "sess-001")
+        router.rename_session("discord:100", "new-name")
+
+        session = router.resolve("discord:100")
+        assert session.name == "new-name"
+
+
+class TestFindSessionByName:
+    def test_find_active_by_name(self, router):
+        name = router.register("discord:100", "gpu-1", "/path", "sess-001")
+        found = router.find_session_by_name(name)
+        assert found is not None
+        assert found.daemon_session_id == "sess-001"
+        assert found.name == name
+
+    def test_find_detached_by_name(self, router):
+        name = router.register("discord:100", "gpu-1", "/path", "sess-001")
+        router.detach("discord:100")
+
+        found = router.find_session_by_name(name)
+        assert found is not None
+        assert found.status == "detached"
+        assert found.name == name
+
+    def test_find_by_name_not_found(self, router):
+        result = router.find_session_by_name("nonexistent-name")
+        assert result is None
+
+    def test_find_by_custom_name(self, router):
+        router.register("discord:100", "gpu-1", "/path", "sess-001")
+        router.rename_session("discord:100", "my-project")
+
+        found = router.find_session_by_name("my-project")
+        assert found is not None
+        assert found.daemon_session_id == "sess-001"
+
+
+class TestFindSessionByNameOrId:
+    def test_find_by_name(self, router):
+        name = router.register("discord:100", "gpu-1", "/path", "sess-001")
+        found = router.find_session_by_name_or_id(name)
+        assert found is not None
+        assert found.daemon_session_id == "sess-001"
+
+    def test_find_by_daemon_id(self, router):
+        router.register("discord:100", "gpu-1", "/path", "sess-001")
+        found = router.find_session_by_name_or_id("sess-001")
+        assert found is not None
+        assert found.daemon_session_id == "sess-001"
+
+    def test_name_takes_precedence(self, router):
+        """If a name matches, it should be returned even if the string also looks like an ID."""
+        name = router.register("discord:100", "gpu-1", "/path", "sess-001")
+        found = router.find_session_by_name_or_id(name)
+        assert found is not None
+        assert found.name == name
+
+    def test_not_found(self, router):
+        result = router.find_session_by_name_or_id("nonexistent")
+        assert result is None
+
+    def test_find_detached_by_name(self, router):
+        name = router.register("discord:100", "gpu-1", "/path", "sess-001")
+        router.detach("discord:100")
+
+        found = router.find_session_by_name_or_id(name)
+        assert found is not None
+        assert found.status == "detached"
+
+    def test_find_detached_by_id(self, router):
+        router.register("discord:100", "gpu-1", "/path", "sess-001")
+        router.detach("discord:100")
+
+        found = router.find_session_by_name_or_id("sess-001")
+        assert found is not None
+        assert found.status == "detached"
+
+
+class TestSchemaMigration:
+    def test_existing_db_without_name_column(self, tmp_path):
+        """Test that old databases without 'name' column get migrated."""
+        import sqlite3
+        db_path = str(tmp_path / "old.db")
+
+        # Create old-schema DB
+        conn = sqlite3.connect(db_path)
+        conn.executescript("""
+            CREATE TABLE sessions (
+                channel_id TEXT PRIMARY KEY,
+                machine_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                daemon_session_id TEXT NOT NULL,
+                sdk_session_id TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                mode TEXT NOT NULL DEFAULT 'auto',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE session_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id TEXT NOT NULL,
+                machine_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                daemon_session_id TEXT NOT NULL,
+                sdk_session_id TEXT,
+                mode TEXT,
+                created_at TEXT NOT NULL,
+                detached_at TEXT
+            );
+        """)
+        conn.execute(
+            "INSERT INTO sessions VALUES (?, ?, ?, ?, NULL, 'active', 'auto', '2024-01-01', '2024-01-01')",
+            ("discord:100", "gpu-1", "/path", "sess-old"),
+        )
+        conn.commit()
+        conn.close()
+
+        # Open with SessionRouter (should migrate)
+        router = SessionRouter(db_path=db_path)
+
+        # Old session should be readable
+        session = router.resolve("discord:100")
+        assert session is not None
+        assert session.daemon_session_id == "sess-old"
+        assert session.name is None  # No name in old data
+
+        # New sessions should get names
+        name = router.register("discord:200", "gpu-2", "/path2", "sess-new")
+        assert name is not None
+        assert "-" in name

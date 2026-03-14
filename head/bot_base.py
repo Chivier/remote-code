@@ -118,6 +118,8 @@ class BotBase(ABC):
                 await self.cmd_status(channel_id)
             elif cmd == "/interrupt":
                 await self.cmd_interrupt(channel_id)
+            elif cmd == "/rename":
+                await self.cmd_rename(channel_id, args)
             elif cmd == "/health":
                 await self.cmd_health(channel_id, args)
             elif cmd == "/monitor":
@@ -163,33 +165,37 @@ class BotBase(ABC):
         )
 
         # Register in session router
-        self.router.register(
+        name = self.router.register(
             channel_id, machine_id, path, daemon_session_id, self.config.default_mode
         )
 
         await self.send_message(
             channel_id,
             f"Session started on **{machine_id}**:`{path}`\n"
-            f"Session ID: `{daemon_session_id[:12]}...`\n"
+            f"Name: **{name}**\n"
+            f"Session ID: `{daemon_session_id}`\n"
             f"Mode: **{display_mode(self.config.default_mode)}**\n\n"
             f"Send messages to interact with Claude."
         )
 
     async def cmd_resume(self, channel_id: str, args: list[str]) -> None:
-        """/resume <session_id> - Resume a previous session."""
+        """/resume <session_id_or_name> - Resume a previous session."""
         if len(args) < 1:
-            await self.send_message(channel_id, "Usage: `/resume <session_id>`")
+            await self.send_message(channel_id, "Usage: `/resume <session_id_or_name>`")
             return
 
-        session_id = args[0]
+        identifier = args[0]
 
-        # Find the session in our records
-        session = self.router.find_session_by_daemon_id(session_id)
+        # Find the session by name or daemon ID
+        session = self.router.find_session_by_name_or_id(identifier)
         if not session:
-            await self.send_message(channel_id, f"Session `{session_id}` not found in records.")
+            await self.send_message(channel_id, f"Session `{identifier}` not found in records.")
             return
 
-        await self.send_message(channel_id, f"Resuming session on **{session.machine_id}**:`{session.path}`...")
+        session_id = session.daemon_session_id
+        name_str = f" (**{session.name}**)" if session.name else ""
+
+        await self.send_message(channel_id, f"Resuming session{name_str} on **{session.machine_id}**:`{session.path}`...")
 
         # Ensure tunnel
         local_port = await self.ssh.ensure_tunnel(session.machine_id)
@@ -247,10 +253,11 @@ class BotBase(ABC):
             return
 
         self.router.detach(channel_id)
+        name_hint = session.name or session.daemon_session_id
         await self.send_message(
             channel_id,
             f"Detached from session on **{session.machine_id}**:`{session.path}`\n"
-            f"Use `/resume {session.daemon_session_id}` to reconnect."
+            f"Use `/resume {name_hint}` to reconnect."
         )
 
     async def cmd_rm(self, channel_id: str, args: list[str]) -> None:
@@ -355,6 +362,35 @@ class BotBase(ABC):
         except Exception as e:
             await self.send_message(channel_id, format_error(f"Failed to interrupt: {e}"))
 
+    async def cmd_rename(self, channel_id: str, args: list[str]) -> None:
+        """/rename <new_name> - Rename the current session."""
+        if not args:
+            await self.send_message(channel_id, "Usage: `/rename <new_name>`\nExample: `/rename my-project`")
+            return
+
+        new_name = args[0].lower().strip()
+
+        # Validate name format
+        from .name_generator import is_valid_name
+        if not is_valid_name(new_name):
+            await self.send_message(
+                channel_id,
+                "Invalid name. Use lowercase letters, digits, and hyphens (at least two words).\n"
+                "Example: `my-project`, `test-run-1`"
+            )
+            return
+
+        session = self.router.resolve(channel_id)
+        if not session:
+            await self.send_message(channel_id, "No active session. Use `/start` first.")
+            return
+
+        old_name = session.name or "(unnamed)"
+        if self.router.rename_session(channel_id, new_name):
+            await self.send_message(channel_id, f"Session renamed: **{old_name}** -> **{new_name}**")
+        else:
+            await self.send_message(channel_id, f"Name `{new_name}` is already in use. Choose a different name.")
+
     async def cmd_health(self, channel_id: str, args: list[str]) -> None:
         """/health [machine] - Check daemon health on a machine."""
         # Determine which machine to check
@@ -430,12 +466,13 @@ class BotBase(ABC):
         help_text = """**Remote Claude Commands:**
 
 `/start <machine> <path>` - Start a new Claude session
-`/resume <session_id>` - Resume a previous session
+`/resume <session_id_or_name>` - Resume a previous session
 `/ls machine` - List all machines
 `/ls session [machine]` - List sessions
 `/exit` - Detach from current session
 `/rm <machine> <path>` - Destroy a session
 `/mode <auto|code|plan|ask>` - Switch permission mode
+`/rename <new_name>` - Rename current session
 `/status` - Show current session info
 `/health [machine]` - Check daemon health
 `/monitor [machine]` - Monitor session details & queues

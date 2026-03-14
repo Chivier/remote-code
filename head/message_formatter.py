@@ -120,19 +120,20 @@ def format_session_info(session: Any) -> str:
     if hasattr(session, "channel_id"):
         # Session from SessionRouter
         mode_str = display_mode(session.mode)
+        name_str = f" **{session.name}**" if session.name else ""
         return (
-            f"{status_icon} `{session.daemon_session_id[:8]}...` "
+            f"{status_icon}{name_str} `{session.daemon_session_id}` "
             f"**{session.machine_id}**:`{session.path}` "
             f"[{mode_str}] ({session.status})"
         )
     else:
         # Session info dict from daemon
-        sid = session.get("sessionId", "?")[:8]
+        sid = session.get("sessionId", "?")
         mode_str = display_mode(session.get("mode", "?"))
         model = session.get("model", "")
         model_str = f" | {model}" if model else ""
         return (
-            f"{status_icon} `{sid}...` "
+            f"{status_icon} `{sid}` "
             f"**{session.get('path', '?')}** "
             f"[{mode_str}{model_str}] ({session.get('status', '?')})"
         )
@@ -176,17 +177,19 @@ def format_error(error: str) -> str:
 def format_status(session: Any, queue_stats: dict[str, Any] | None = None) -> str:
     """Format session status for /status command."""
     mode_str = display_mode(session.mode)
+    name_str = session.name if session.name else "(unnamed)"
     lines = [
         f"**Session Status**",
+        f"Name: **{name_str}**",
         f"Machine: **{session.machine_id}**",
         f"Path: `{session.path}`",
         f"Mode: **{mode_str}**",
         f"Status: **{session.status}**",
-        f"Session ID: `{session.daemon_session_id[:12]}...`",
+        f"Session ID: `{session.daemon_session_id}`",
     ]
 
     if session.sdk_session_id:
-        lines.append(f"SDK Session: `{session.sdk_session_id[:12]}...`")
+        lines.append(f"SDK Session: `{session.sdk_session_id}`")
 
     if queue_stats:
         lines.append(f"Queue: {queue_stats.get('userPending', 0)} pending messages")
@@ -246,7 +249,7 @@ def format_monitor(machine_id: str, monitor: dict[str, Any]) -> str:
     ]
 
     for s in sessions:
-        sid = s.get("sessionId", "?")[:8]
+        sid = s.get("sessionId", "?")
         status = s.get("status", "?")
         mode_str = display_mode(s.get("mode", "?"))
         model = s.get("model", "")
@@ -263,7 +266,7 @@ def format_monitor(machine_id: str, monitor: dict[str, Any]) -> str:
         conn_icon = "connected" if connected else "**disconnected**"
         model_str = f" | {model}" if model else ""
 
-        lines.append(f"{status_icon} `{sid}...` **{status}** [{mode_str}{model_str}]")
+        lines.append(f"{status_icon} `{sid}` **{status}** [{mode_str}{model_str}]")
         lines.append(f"  Path: `{path}`")
         lines.append(f"  Client: {conn_icon} | Queue: {user_pending} pending, {resp_pending} buffered")
         lines.append("")

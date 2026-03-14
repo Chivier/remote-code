@@ -171,11 +171,11 @@ class DiscordBot(BotBase):
             ][:25]
 
         @tree.command(name="resume", description="Resume a previously detached session")
-        @app_commands.describe(session_id="Session ID to resume")
+        @app_commands.describe(session_id="Session ID or name to resume")
         async def slash_resume(interaction: discord.Interaction, session_id: str) -> None:
             channel_id = f"discord:{interaction.channel_id}"
             self._channels[channel_id] = interaction.channel
-            await interaction.response.send_message(f"Resuming session `{session_id[:12]}...`")
+            await interaction.response.send_message(f"Resuming session `{session_id}`...")
             try:
                 await self.cmd_resume(channel_id, [session_id])
             except Exception as e:
@@ -268,6 +268,16 @@ class DiscordBot(BotBase):
             channel_id = self._defer_and_register(interaction)
             try:
                 await self.cmd_status(channel_id)
+            except Exception as e:
+                await self.send_message(channel_id, format_error(str(e)))
+
+        @tree.command(name="rename", description="Rename the current session")
+        @app_commands.describe(name="New name for the session (e.g. my-project)")
+        async def slash_rename(interaction: discord.Interaction, name: str) -> None:
+            await interaction.response.defer()
+            channel_id = self._defer_and_register(interaction)
+            try:
+                await self.cmd_rename(channel_id, [name])
             except Exception as e:
                 await self.send_message(channel_id, format_error(str(e)))
 

@@ -466,11 +466,11 @@ class TestCmdExit:
 
     @pytest.mark.asyncio
     async def test_exit_success(self, bot, mock_router):
-        mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        name = mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
         await bot.cmd_exit("discord:100")
         msg = bot.get_last_message()
         assert "Detached" in msg
-        assert "sess-001" in msg
+        assert name in msg
 
 
 # ─── cmd_ls ───

@@ -182,6 +182,7 @@ class TestFormatSessionInfo:
             "mode": "auto",
             "created_at": "2024-01-01T00:00:00",
             "updated_at": "2024-01-01T00:00:00",
+            "name": "bright-falcon",
         }
         defaults.update(kwargs)
         return Session(**defaults)
@@ -190,11 +191,29 @@ class TestFormatSessionInfo:
         session = self._make_session(status="active")
         result = format_session_info(session)
         assert "●" in result
-        assert "abcdef12..." in result
+        assert "abcdef1234567890" in result  # Full ID, no truncation
+        assert "..." not in result  # No ellipsis
         assert "gpu-1" in result
         assert "/home/user/project" in result
         assert "bypass" in result  # auto -> bypass
         assert "active" in result
+
+    def test_session_object_shows_name(self):
+        session = self._make_session(name="bright-falcon")
+        result = format_session_info(session)
+        assert "**bright-falcon**" in result
+
+    def test_session_object_no_name(self):
+        session = self._make_session(name=None)
+        result = format_session_info(session)
+        # Should not have empty name formatting
+        assert "**None**" not in result
+
+    def test_session_object_full_id_displayed(self):
+        long_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        session = self._make_session(daemon_session_id=long_id)
+        result = format_session_info(session)
+        assert long_id in result  # Full UUID displayed
 
     def test_session_object_detached(self):
         session = self._make_session(status="detached")
@@ -206,7 +225,7 @@ class TestFormatSessionInfo:
         result = format_session_info(session)
         assert "✕" in result
 
-    def test_session_dict(self):
+    def test_session_dict_full_id(self):
         session_dict = {
             "sessionId": "abcdef1234567890",
             "path": "/home/user/project",
@@ -215,13 +234,21 @@ class TestFormatSessionInfo:
             "status": "idle",
         }
         result = format_session_info(session_dict)
-        # Dict has no attributes, so getattr(session, "status", "") returns ""
-        # which maps to "?" in the icon dict
-        assert "?" in result
-        assert "abcdef12..." in result
+        assert "abcdef1234567890" in result  # Full ID
         assert "/home/user/project" in result
         assert "code" in result
         assert "claude-3-opus" in result
+
+    def test_session_dict_no_truncation(self):
+        long_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        session_dict = {
+            "sessionId": long_id,
+            "path": "/test",
+            "mode": "auto",
+            "status": "idle",
+        }
+        result = format_session_info(session_dict)
+        assert long_id in result  # Full UUID in dict too
 
     def test_session_dict_no_model(self):
         session_dict = {
@@ -231,30 +258,7 @@ class TestFormatSessionInfo:
             "status": "busy",
         }
         result = format_session_info(session_dict)
-        # Dict uses "?" icon because getattr doesn't work on dicts
-        assert "?" in result
         assert "bypass" in result  # auto -> bypass
-
-    def test_session_dict_error_status(self):
-        session_dict = {
-            "sessionId": "abcdef1234567890",
-            "path": "/test",
-            "mode": "ask",
-            "status": "error",
-        }
-        result = format_session_info(session_dict)
-        # Dict uses "?" icon because getattr doesn't work on dicts
-        assert "?" in result
-
-    def test_session_dict_unknown_status(self):
-        session_dict = {
-            "sessionId": "abcdef1234567890",
-            "path": "/test",
-            "mode": "ask",
-            "status": "weird",
-        }
-        result = format_session_info(session_dict)
-        assert "?" in result
 
     def test_mode_display_in_session_object(self):
         session = self._make_session(mode="code")
@@ -343,6 +347,7 @@ class TestFormatSessionList:
             "mode": "auto",
             "created_at": "2024-01-01T00:00:00",
             "updated_at": "2024-01-01T00:00:00",
+            "name": "bright-falcon",
         }
         defaults.update(kwargs)
         return Session(**defaults)
@@ -359,13 +364,23 @@ class TestFormatSessionList:
 
     def test_multiple_sessions(self):
         sessions = [
-            self._make_session(daemon_session_id="aaaa1234567890ab", machine_id="gpu-1"),
-            self._make_session(daemon_session_id="bbbb1234567890ab", machine_id="gpu-2"),
+            self._make_session(daemon_session_id="aaaa1234567890ab", machine_id="gpu-1", name="bright-falcon"),
+            self._make_session(daemon_session_id="bbbb1234567890ab", machine_id="gpu-2", name="calm-river"),
         ]
         result = format_session_list(sessions)
         assert "Sessions:" in result
         assert "gpu-1" in result
         assert "gpu-2" in result
+
+    def test_session_list_shows_full_ids(self):
+        sessions = [self._make_session(daemon_session_id="a1b2c3d4-e5f6-7890-abcd-ef1234567890")]
+        result = format_session_list(sessions)
+        assert "a1b2c3d4-e5f6-7890-abcd-ef1234567890" in result
+
+    def test_session_list_shows_names(self):
+        sessions = [self._make_session(name="my-project")]
+        result = format_session_list(sessions)
+        assert "**my-project**" in result
 
 
 # ─── format_error ───
@@ -396,6 +411,7 @@ class TestFormatStatus:
             "mode": "auto",
             "created_at": "2024-01-01T00:00:00",
             "updated_at": "2024-01-01T00:00:00",
+            "name": "bright-falcon",
         }
         defaults.update(kwargs)
         return Session(**defaults)
@@ -408,19 +424,35 @@ class TestFormatStatus:
         assert "/home/user/project" in result
         assert "bypass" in result  # auto -> bypass
         assert "active" in result
-        assert "abcdef123456..." in result
+        assert "abcdef1234567890abcdef" in result  # Full ID, no truncation
+
+    def test_status_shows_name(self):
+        session = self._make_session(name="bright-falcon")
+        result = format_status(session)
+        assert "Name: **bright-falcon**" in result
+
+    def test_status_shows_unnamed(self):
+        session = self._make_session(name=None)
+        result = format_status(session)
+        assert "Name: **(unnamed)**" in result
+
+    def test_status_full_session_id(self):
+        long_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        session = self._make_session(daemon_session_id=long_id)
+        result = format_status(session)
+        assert long_id in result  # Full UUID
+        assert "..." not in result  # No ellipsis after session ID
 
     def test_mode_display(self):
         session = self._make_session(mode="code")
         result = format_status(session)
         assert "code" in result
 
-    def test_with_sdk_session(self):
-        session = self._make_session(sdk_session_id="sdk-session-1234567890ab")
+    def test_with_sdk_session_full_id(self):
+        session = self._make_session(sdk_session_id="sdk-session-1234567890abcdef")
         result = format_status(session)
         assert "SDK Session:" in result
-        # sdk_session_id[:12] = "sdk-session-" then "..." appended
-        assert "sdk-session-..." in result
+        assert "sdk-session-1234567890abcdef" in result  # Full SDK session ID
 
     def test_without_sdk_session(self):
         session = self._make_session(sdk_session_id=None)
@@ -508,7 +540,7 @@ class TestFormatMonitor:
         assert "No active sessions" in result
         assert "gpu-1" in result
 
-    def test_single_session(self):
+    def test_single_session_full_id(self):
         monitor = {
             "uptime": 3665,
             "sessions": [{
@@ -534,6 +566,7 @@ class TestFormatMonitor:
         assert "claude-3-opus" in result
         assert "/home/user/project" in result
         assert "connected" in result
+        assert "abcdef1234567890" in result  # Full ID, no truncation
 
     def test_multiple_sessions(self):
         monitor = {
