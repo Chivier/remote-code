@@ -6,6 +6,7 @@ Starts the Head Node with configured bots (Discord, Telegram, or both).
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -26,6 +27,11 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("remote-claude")
+
+# Store startup info for restart via os.execv
+_startup_executable: str = sys.executable
+_startup_config_path: str = "config.yaml"
+_startup_workdir: str = os.getcwd()
 
 
 async def main(config_path: str = "config.yaml") -> None:
@@ -152,4 +158,5 @@ async def main(config_path: str = "config.yaml") -> None:
 
 if __name__ == "__main__":
     config_file = sys.argv[1] if len(sys.argv) > 1 else "config.yaml"
+    _startup_config_path = config_file
     asyncio.run(main(config_file))

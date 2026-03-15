@@ -100,9 +100,6 @@ class DiscordBot(BotBase):
             # Ignore messages from other bots
             if message.author.bot:
                 return
-            # Ignore slash commands (handled by app_commands)
-            if message.content.startswith("/"):
-                return
             # Check if channel is allowed
             if self.discord_config and self.discord_config.allowed_channels:
                 if message.channel.id not in self.discord_config.allowed_channels:
@@ -110,6 +107,15 @@ class DiscordBot(BotBase):
 
             channel_id = f"discord:{message.channel.id}"
             self._channels[channel_id] = message.channel
+
+            # Route text-based commands through handle_input
+            # (slash commands are handled separately by app_commands)
+            if message.content.startswith("/"):
+                await self.handle_input(
+                    channel_id, message.content,
+                    user_id=message.author.id,
+                )
+                return
 
             # Process attachments
             file_refs: list[FileEntry] = []
@@ -315,6 +321,15 @@ class DiscordBot(BotBase):
             except Exception as e:
                 await self.send_message(channel_id, format_error(str(e)))
 
+        @tree.command(name="interrupt", description="Interrupt Claude's current operation")
+        async def slash_interrupt(interaction: discord.Interaction) -> None:
+            await interaction.response.defer()
+            channel_id = self._defer_and_register(interaction)
+            try:
+                await self.cmd_interrupt(channel_id)
+            except Exception as e:
+                await self.send_message(channel_id, format_error(str(e)))
+
         @tree.command(name="help", description="Show available Remote Claude commands")
         async def slash_help(interaction: discord.Interaction) -> None:
             await interaction.response.defer()
@@ -446,6 +461,26 @@ class DiscordBot(BotBase):
                 if mid not in jump_hosts and current.lower() in mid.lower()
             ]
             return [app_commands.Choice(name=m, value=m) for m in machines][:25]
+
+        # --- /update ---
+        @tree.command(name="update", description="Pull latest code and restart (admin only)")
+        async def slash_update(interaction: discord.Interaction) -> None:
+            await interaction.response.defer()
+            channel_id = self._defer_and_register(interaction)
+            try:
+                await self.cmd_update(channel_id, user_id=interaction.user.id)
+            except Exception as e:
+                await self.send_message(channel_id, format_error(str(e)))
+
+        # --- /restart ---
+        @tree.command(name="restart", description="Restart the head node (admin only)")
+        async def slash_restart(interaction: discord.Interaction) -> None:
+            await interaction.response.defer()
+            channel_id = self._defer_and_register(interaction)
+            try:
+                await self.cmd_restart(channel_id, user_id=interaction.user.id)
+            except Exception as e:
+                await self.send_message(channel_id, format_error(str(e)))
 
     # --- Typing Indicator ---
 

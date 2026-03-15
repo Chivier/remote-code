@@ -8,8 +8,11 @@ Subclasses implement platform-specific send/edit operations.
 import asyncio
 import logging
 import os
+import subprocess
+import sys
 import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Optional
 
 from .config import Config, MachineConfig, save_machine_to_config, remove_machine_from_config, parse_ssh_config, format_ssh_hosts_for_display, _is_localhost
@@ -79,9 +82,21 @@ class BotBase(ABC):
         """Stop the bot."""
         ...
 
+    # ─── Admin Check ───
+
+    def is_admin(self, user_id: Optional[int]) -> bool:
+        """Check if a user ID is in the admin_users list."""
+        if user_id is None:
+            return False
+        dc = self.config.bot.discord
+        if dc and dc.admin_users:
+            return user_id in dc.admin_users
+        # If no admin_users configured, nobody is admin
+        return False
+
     # ─── Command Dispatcher ───
 
-    async def handle_input(self, channel_id: str, text: str) -> None:
+    async def handle_input(self, channel_id: str, text: str, user_id: Optional[int] = None) -> None:
         """
         Main entry point: handle a user message from a chat channel.
         Routes to commands or forwards to Claude session.
@@ -99,12 +114,12 @@ class BotBase(ABC):
 
         # Check if it's a command
         if text.startswith("/"):
-            await self._handle_command(channel_id, text)
+            await self._handle_command(channel_id, text, user_id=user_id)
         else:
             # Forward to active Claude session
             await self._forward_message(channel_id, text)
 
-    async def _handle_command(self, channel_id: str, text: str) -> None:
+    async def _handle_command(self, channel_id: str, text: str, user_id: Optional[int] = None) -> None:
         """Parse and dispatch a command."""
         parts = text.split()
         cmd = parts[0].lower()
@@ -145,6 +160,10 @@ class BotBase(ABC):
                 await self.cmd_add_machine(channel_id, args)
             elif cmd in ("/remove-machine", "/removemachine", "/rm-machine", "/rmmachine"):
                 await self.cmd_remove_machine(channel_id, args)
+            elif cmd == "/restart":
+                await self.cmd_restart(channel_id, user_id)
+            elif cmd == "/update":
+                await self.cmd_update(channel_id, user_id)
             elif cmd == "/help":
                 await self.cmd_help(channel_id)
             else:
@@ -821,6 +840,80 @@ class BotBase(ABC):
 
         await self.send_message(channel_id, f"Machine **{machine_id}** removed.")
 
+    async def cmd_restart(self, channel_id: str, user_id: Optional[int] = None) -> None:
+        """/restart - Restart the head node process (admin only)."""
+        if not self.is_admin(user_id):
+            await self.send_message(channel_id, "**Error:** `/restart` requires admin privileges.")
+            return
+
+        await self.send_message(channel_id, "Restarting head node...")
+        logger.info(f"Restart requested by user {user_id}")
+
+        # Give Discord a moment to deliver the message
+        await asyncio.sleep(1)
+
+        # Perform os.execv to replace this process with a fresh copy
+        self._do_restart()
+
+    async def cmd_update(self, channel_id: str, user_id: Optional[int] = None) -> None:
+        """/update - Git pull and restart (admin only)."""
+        if not self.is_admin(user_id):
+            await self.send_message(channel_id, "**Error:** `/update` requires admin privileges.")
+            return
+
+        project_dir = str(Path(__file__).resolve().parent.parent)
+        await self.send_message(channel_id, "Pulling latest code...")
+
+        try:
+            result = subprocess.run(
+                ["git", "pull", "--ff-only"],
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            await self.send_message(channel_id, format_error("Git pull timed out after 30s."))
+            return
+        except FileNotFoundError:
+            await self.send_message(channel_id, format_error("Git not found on this machine."))
+            return
+
+        if result.returncode != 0:
+            stderr = result.stderr.strip()[:500] if result.stderr else "(no output)"
+            await self.send_message(
+                channel_id,
+                format_error(f"Git pull failed:\n```\n{stderr}\n```")
+            )
+            return
+
+        # Show what changed
+        stdout = result.stdout.strip() if result.stdout else "(no output)"
+        if "Already up to date" in stdout:
+            await self.send_message(channel_id, f"Already up to date. No restart needed.\n```\n{stdout}\n```")
+            return
+
+        await self.send_message(channel_id, f"Updated:\n```\n{stdout}\n```\nRestarting...")
+        logger.info(f"Update requested by user {user_id}: {stdout}")
+
+        await asyncio.sleep(1)
+        self._do_restart()
+
+    @staticmethod
+    def _do_restart() -> None:
+        """Replace this process with a fresh copy via os.execv."""
+        from . import main as main_module
+        exe = main_module._startup_executable
+        config_path = main_module._startup_config_path
+        workdir = main_module._startup_workdir
+
+        args = [exe, "-m", "head.main", config_path]
+        logger.info(f"Restarting: {' '.join(args)} (cwd={workdir})")
+
+        # Restore working directory (in case it changed)
+        os.chdir(workdir)
+        os.execv(exe, args)
+
     async def cmd_help(self, channel_id: str) -> None:
         """/help - Show available commands."""
         help_text = """**Remote Claude Commands:**
@@ -839,6 +932,8 @@ class BotBase(ABC):
 `/add-machine <id> <host> <user> [opts]` - Add a machine
 `/add-machine --from-ssh` - Import from SSH config
 `/remove-machine <machine>` - Remove a machine
+`/update` - Pull latest code and restart (admin)
+`/restart` - Restart head node (admin)
 `/help` - Show this help
 
 After `/start` or `/resume`, send any message to interact with Claude."""

@@ -28,6 +28,8 @@ bot:
     allowed_channels:           # Only respond in these channels (empty = all)
       # - 123456789012345678
     command_prefix: "/"
+    admin_users:                # Discord user IDs allowed to use /restart, /update
+      # - 123456789012345678
 
   telegram:
     token: ${TELEGRAM_TOKEN}    # Set via environment variable

@@ -37,6 +37,7 @@ class DiscordConfig:
     token: str
     allowed_channels: list[int] = field(default_factory=list)
     command_prefix: str = "/"
+    admin_users: list[int] = field(default_factory=list)  # Discord user IDs for /restart, /update
 
 
 @dataclass
@@ -169,6 +170,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
                 token=discord_raw.get("token", ""),
                 allowed_channels=[int(c) for c in discord_raw.get("allowed_channels", [])],
                 command_prefix=discord_raw.get("command_prefix", "/"),
+                admin_users=[int(u) for u in discord_raw.get("admin_users", [])],
             )
         telegram_raw: Optional[dict[str, Any]] = bot_raw.get("telegram")
         if telegram_raw:
