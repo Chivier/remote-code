@@ -22,6 +22,15 @@ machines:
   #   proxy_jump: gpu-1
   #   daemon_port: 9100
 
+  # Example: localhost (head node itself, no SSH needed)
+  # local:
+  #   host: localhost             # auto-detected as localhost
+  #   user: your-user
+  #   daemon_port: 9200           # use different port to avoid conflicts
+  #   node_path: /usr/bin/node
+  #   default_paths:
+  #     - /home/your-user/projects
+
 bot:
   discord:
     token: ${DISCORD_TOKEN}     # Set via environment variable
