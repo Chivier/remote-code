@@ -2,6 +2,7 @@
 
 # Config
 pyyaml>=6.0
+ruamel.yaml>=0.18.0
 
 # SSH
 asyncssh>=2.14.0

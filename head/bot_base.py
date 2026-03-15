@@ -7,11 +7,12 @@ Subclasses implement platform-specific send/edit operations.
 
 import asyncio
 import logging
+import os
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
-from .config import Config
+from .config import Config, MachineConfig, save_machine_to_config, remove_machine_from_config, parse_ssh_config, format_ssh_hosts_for_display, _is_localhost
 from .ssh_manager import SSHManager
 from .session_router import SessionRouter
 from .daemon_client import DaemonClient, DaemonError, DaemonConnectionError
@@ -89,6 +90,13 @@ class BotBase(ABC):
         if not text:
             return
 
+        # Check for pending interactive flows (SSH import, remove confirmation)
+        if not text.startswith("/"):
+            if await self._handle_ssh_import_selection(channel_id, text):
+                return
+            if await self._handle_remove_confirmation(channel_id, text):
+                return
+
         # Check if it's a command
         if text.startswith("/"):
             await self._handle_command(channel_id, text)
@@ -98,9 +106,17 @@ class BotBase(ABC):
 
     async def _handle_command(self, channel_id: str, text: str) -> None:
         """Parse and dispatch a command."""
-        parts = text.split(maxsplit=2)
+        parts = text.split()
         cmd = parts[0].lower()
-        args = parts[1:] if len(parts) > 1 else []
+
+        # Commands that need all args split individually (variadic)
+        variadic_cmds = {"/add-machine", "/addmachine"}
+        if cmd in variadic_cmds:
+            args = parts[1:]
+        else:
+            # Legacy: split with maxsplit=2 (preserves path args with spaces)
+            parts2 = text.split(maxsplit=2)
+            args = parts2[1:] if len(parts2) > 1 else []
 
         try:
             if cmd == "/start":
@@ -125,6 +141,10 @@ class BotBase(ABC):
                 await self.cmd_health(channel_id, args)
             elif cmd == "/monitor":
                 await self.cmd_monitor(channel_id, args)
+            elif cmd in ("/add-machine", "/addmachine"):
+                await self.cmd_add_machine(channel_id, args)
+            elif cmd in ("/remove-machine", "/removemachine", "/rm-machine", "/rmmachine"):
+                await self.cmd_remove_machine(channel_id, args)
             elif cmd == "/help":
                 await self.cmd_help(channel_id)
             else:
@@ -462,6 +482,345 @@ class BotBase(ABC):
         except Exception as e:
             await self.send_message(channel_id, format_error(f"Monitor failed for {machine_id}: {e}"))
 
+    async def cmd_add_machine(self, channel_id: str, args: list[str]) -> None:
+        """/add-machine <id> <host> <user> [options] | /add-machine --from-ssh"""
+        if not args:
+            await self.send_message(
+                channel_id,
+                "Usage:\n"
+                "`/add-machine <id> <host> <user> [options]`\n"
+                "`/add-machine --from-ssh` — Import from SSH config\n\n"
+                "Options:\n"
+                "  `--proxy-jump <machine>` — Jump host\n"
+                "  `--node-path <path>` — Path to node binary\n"
+                "  `--password <pwd>` — SSH password (or file:/path)\n"
+                "  `--port <n>` — SSH port (default: 22)\n"
+                "  `--daemon-port <n>` — Daemon port (default: 9100)\n"
+                "  `--paths <p1,p2,...>` — Default project paths"
+            )
+            return
+
+        # Check for --from-ssh mode
+        if args[0] == "--from-ssh":
+            await self._add_machine_from_ssh(channel_id)
+            return
+
+        # Inline mode: /add-machine <id> <host> <user> [options...]
+        if len(args) < 3:
+            await self.send_message(
+                channel_id,
+                "Usage: `/add-machine <id> <host> <user> [options]`\n"
+                "Or: `/add-machine --from-ssh`"
+            )
+            return
+
+        machine_id = args[0]
+        host = args[1]
+        user = args[2]
+
+        # Check for duplicate
+        if machine_id in self.config.machines:
+            await self.send_message(channel_id, f"Machine `{machine_id}` already exists. Remove it first with `/remove-machine {machine_id}`.")
+            return
+
+        # Parse optional flags from remaining args
+        proxy_jump = None
+        node_path = None
+        password = None
+        port = 22
+        daemon_port = 9100
+        paths: list[str] = []
+
+        i = 3
+        while i < len(args):
+            flag = args[i]
+            if flag == "--proxy-jump" and i + 1 < len(args):
+                proxy_jump = args[i + 1]
+                i += 2
+            elif flag == "--node-path" and i + 1 < len(args):
+                node_path = args[i + 1]
+                i += 2
+            elif flag == "--password" and i + 1 < len(args):
+                password = args[i + 1]
+                i += 2
+            elif flag == "--port" and i + 1 < len(args):
+                try:
+                    port = int(args[i + 1])
+                except ValueError:
+                    await self.send_message(channel_id, f"Invalid port: `{args[i + 1]}`")
+                    return
+                i += 2
+            elif flag == "--daemon-port" and i + 1 < len(args):
+                try:
+                    daemon_port = int(args[i + 1])
+                except ValueError:
+                    await self.send_message(channel_id, f"Invalid daemon port: `{args[i + 1]}`")
+                    return
+                i += 2
+            elif flag == "--paths" and i + 1 < len(args):
+                paths = [p.strip() for p in args[i + 1].split(",") if p.strip()]
+                i += 2
+            else:
+                await self.send_message(channel_id, f"Unknown option: `{flag}`")
+                return
+
+        # Validate proxy_jump references an existing machine
+        if proxy_jump and proxy_jump not in self.config.machines:
+            await self.send_message(
+                channel_id,
+                f"Proxy jump host `{proxy_jump}` not found. Available machines: "
+                f"{', '.join(self.config.machines.keys())}"
+            )
+            return
+
+        # Detect localhost
+        is_local = _is_localhost(host)
+
+        mc = MachineConfig(
+            id=machine_id,
+            host=host,
+            user=user,
+            port=port,
+            proxy_jump=proxy_jump,
+            password=password,
+            daemon_port=daemon_port,
+            node_path=node_path,
+            default_paths=paths,
+            localhost=is_local,
+        )
+
+        # Add to runtime config
+        self.config.machines[machine_id] = mc
+
+        # Persist to config.yaml
+        try:
+            save_machine_to_config(self.config, mc)
+        except Exception as e:
+            logger.warning(f"Failed to save to config.yaml: {e}")
+            await self.send_message(channel_id, f"**Warning:** Machine added to runtime but failed to save to config.yaml: {e}")
+
+        local_tag = " (localhost)" if is_local else ""
+        proxy_tag = f" via `{proxy_jump}`" if proxy_jump else ""
+        await self.send_message(
+            channel_id,
+            f"Machine **{machine_id}** added{local_tag}{proxy_tag}\n"
+            f"Host: `{host}` | User: `{user}` | Port: {port}\n"
+            f"Daemon port: {daemon_port}"
+            + (f"\nPaths: {', '.join(f'`{p}`' for p in paths)}" if paths else "")
+            + (f"\nNode: `{node_path}`" if node_path else "")
+        )
+
+    async def _add_machine_from_ssh(self, channel_id: str) -> None:
+        """Parse SSH config and let user select hosts to import."""
+        await self.send_message(channel_id, "Parsing SSH config...")
+
+        entries = parse_ssh_config()
+        if not entries:
+            await self.send_message(channel_id, "No SSH hosts found in `~/.ssh/config`.")
+            return
+
+        # Filter out hosts that are already configured
+        existing = set(self.config.machines.keys())
+        new_entries = [e for e in entries if e.name not in existing]
+
+        if not new_entries:
+            await self.send_message(channel_id, "All SSH hosts are already configured as machines.")
+            return
+
+        # Store the entries for later selection
+        self._ssh_import_entries = new_entries  # type: ignore[attr-defined]
+        self._ssh_import_channel = channel_id  # type: ignore[attr-defined]
+
+        display = format_ssh_hosts_for_display(new_entries)
+        await self.send_message(channel_id, display)
+
+    async def _handle_ssh_import_selection(self, channel_id: str, text: str) -> bool:
+        """
+        Handle user's response to SSH import listing.
+        Returns True if the input was consumed as an import selection.
+        """
+        if not hasattr(self, '_ssh_import_entries') or not hasattr(self, '_ssh_import_channel'):
+            return False
+        if channel_id != self._ssh_import_channel:  # type: ignore[attr-defined]
+            return False
+
+        entries = self._ssh_import_entries  # type: ignore[attr-defined]
+
+        # Parse selection (numbers separated by spaces)
+        try:
+            indices = [int(x.strip()) for x in text.strip().split() if x.strip().isdigit()]
+        except ValueError:
+            return False
+
+        if not indices:
+            # Not a valid selection, clean up and pass through
+            del self._ssh_import_entries  # type: ignore[attr-defined]
+            del self._ssh_import_channel  # type: ignore[attr-defined]
+            return False
+
+        added: list[str] = []
+        errors: list[str] = []
+
+        for idx in indices:
+            if idx < 1 or idx > len(entries):
+                errors.append(f"Index {idx} out of range")
+                continue
+
+            entry = entries[idx - 1]
+
+            if entry.name in self.config.machines:
+                errors.append(f"`{entry.name}` already exists")
+                continue
+
+            # Resolve proxy_jump: if the SSH entry has a proxy_jump that matches
+            # an existing machine, use it; otherwise skip proxy_jump
+            proxy_jump = None
+            if entry.proxy_jump and entry.proxy_jump in self.config.machines:
+                proxy_jump = entry.proxy_jump
+
+            host = entry.hostname or entry.name
+            is_local = _is_localhost(host)
+
+            mc = MachineConfig(
+                id=entry.name,
+                host=host,
+                user=entry.user or os.environ.get("USER", "root"),
+                port=entry.port,
+                proxy_jump=proxy_jump,
+                password=None,
+                daemon_port=9100,
+                node_path=None,
+                default_paths=[],
+                localhost=is_local,
+            )
+
+            self.config.machines[entry.name] = mc
+            try:
+                save_machine_to_config(self.config, mc)
+            except Exception as e:
+                logger.warning(f"Failed to save {entry.name} to config: {e}")
+
+            local_tag = " (localhost)" if is_local else ""
+            added.append(f"**{entry.name}**{local_tag}")
+
+        # Clean up state
+        del self._ssh_import_entries  # type: ignore[attr-defined]
+        del self._ssh_import_channel  # type: ignore[attr-defined]
+
+        result_parts: list[str] = []
+        if added:
+            result_parts.append(f"Added {len(added)} machine(s): {', '.join(added)}")
+        if errors:
+            result_parts.append(f"Errors: {'; '.join(errors)}")
+
+        await self.send_message(channel_id, "\n".join(result_parts) or "No machines added.")
+        return True
+
+    async def cmd_remove_machine(self, channel_id: str, args: list[str]) -> None:
+        """/remove-machine <machine_id> - Remove a machine from config."""
+        if not args:
+            await self.send_message(channel_id, "Usage: `/remove-machine <machine_id>`")
+            return
+
+        machine_id = args[0]
+
+        if machine_id not in self.config.machines:
+            await self.send_message(channel_id, f"Machine `{machine_id}` not found.")
+            return
+
+        # Check if this machine is a proxy_jump target for other machines
+        dependents = [
+            mid for mid, mc in self.config.machines.items()
+            if mc.proxy_jump == machine_id and mid != machine_id
+        ]
+        if dependents:
+            await self.send_message(
+                channel_id,
+                f"Cannot remove **{machine_id}**: it is used as `proxy_jump` by: "
+                f"{', '.join(f'`{d}`' for d in dependents)}\n"
+                f"Remove those machines first."
+            )
+            return
+
+        # Check for active sessions
+        sessions = self.router.list_sessions(machine_id)
+        active_sessions = [s for s in sessions if s.status in ("active", "detached")]
+
+        if active_sessions:
+            # Store pending confirmation
+            self._remove_confirm_machine = machine_id  # type: ignore[attr-defined]
+            self._remove_confirm_channel = channel_id  # type: ignore[attr-defined]
+            self._remove_confirm_sessions = active_sessions  # type: ignore[attr-defined]
+
+            session_list = "\n".join(
+                f"  - `{s.daemon_session_id}` ({s.status}) at `{s.path}`"
+                for s in active_sessions
+            )
+            await self.send_message(
+                channel_id,
+                f"Machine **{machine_id}** has {len(active_sessions)} active session(s):\n"
+                f"{session_list}\n\n"
+                f"These sessions will be detached. Type `yes` to confirm or `no` to cancel."
+            )
+            return
+
+        # No active sessions, remove directly
+        await self._do_remove_machine(channel_id, machine_id)
+
+    async def _handle_remove_confirmation(self, channel_id: str, text: str) -> bool:
+        """
+        Handle user's confirmation for machine removal.
+        Returns True if the input was consumed.
+        """
+        if not hasattr(self, '_remove_confirm_machine') or not hasattr(self, '_remove_confirm_channel'):
+            return False
+        if channel_id != self._remove_confirm_channel:  # type: ignore[attr-defined]
+            return False
+
+        machine_id = self._remove_confirm_machine  # type: ignore[attr-defined]
+        answer = text.strip().lower()
+
+        # Clean up state
+        del self._remove_confirm_machine  # type: ignore[attr-defined]
+        del self._remove_confirm_channel  # type: ignore[attr-defined]
+        sessions = self._remove_confirm_sessions  # type: ignore[attr-defined]
+        del self._remove_confirm_sessions  # type: ignore[attr-defined]
+
+        if answer in ("yes", "y"):
+            # Detach all active sessions
+            for s in sessions:
+                try:
+                    if s.status == "active":
+                        self.router.detach(s.channel_id)
+                except Exception as e:
+                    logger.warning(f"Failed to detach session {s.daemon_session_id}: {e}")
+
+            await self._do_remove_machine(channel_id, machine_id)
+        else:
+            await self.send_message(channel_id, f"Removal of **{machine_id}** cancelled.")
+
+        return True
+
+    async def _do_remove_machine(self, channel_id: str, machine_id: str) -> None:
+        """Actually remove a machine from config and runtime."""
+        # Close tunnel if exists
+        if machine_id in self.ssh.tunnels:
+            tunnel = self.ssh.tunnels[machine_id]
+            await tunnel.close()
+            del self.ssh.tunnels[machine_id]
+
+        # Remove from runtime config
+        del self.config.machines[machine_id]
+
+        # Remove from config.yaml
+        try:
+            remove_machine_from_config(self.config, machine_id)
+        except Exception as e:
+            logger.warning(f"Failed to remove from config.yaml: {e}")
+            await self.send_message(channel_id, f"**Warning:** Removed from runtime but failed to update config.yaml: {e}")
+
+        await self.send_message(channel_id, f"Machine **{machine_id}** removed.")
+
     async def cmd_help(self, channel_id: str) -> None:
         """/help - Show available commands."""
         help_text = """**Remote Claude Commands:**
@@ -477,6 +836,9 @@ class BotBase(ABC):
 `/status` - Show current session info
 `/health [machine]` - Check daemon health
 `/monitor [machine]` - Monitor session details & queues
+`/add-machine <id> <host> <user> [opts]` - Add a machine
+`/add-machine --from-ssh` - Import from SSH config
+`/remove-machine <machine>` - Remove a machine
 `/help` - Show this help
 
 After `/start` or `/resume`, send any message to interact with Claude."""

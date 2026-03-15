@@ -6,10 +6,12 @@ Uses asyncssh for async SSH operations and manages:
 - Port forwarding tunnels (local:port -> remote:daemon_port)
 - Remote daemon deployment and lifecycle
 - Skills sync via SCP
+- Localhost mode for running daemon on the head node itself
 """
 
 import asyncio
 import logging
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -29,17 +31,21 @@ class SSHTunnel:
         self,
         machine_id: str,
         local_port: int,
-        conn: asyncssh.SSHClientConnection,
-        listener: asyncssh.SSHListener,
+        conn: Optional[asyncssh.SSHClientConnection],
+        listener: Optional[asyncssh.SSHListener],
+        is_localhost: bool = False,
     ):
         self.machine_id = machine_id
         self.local_port = local_port
         self.conn = conn
         self.listener = listener
+        self.is_localhost = is_localhost
 
     @property
     def alive(self) -> bool:
         """Check if the tunnel connection is still alive."""
+        if self.is_localhost:
+            return True  # Localhost tunnels are always "alive"
         try:
             return self.conn is not None and not self.conn.is_closed()  # type: ignore[union-attr]
         except Exception:
@@ -47,6 +53,8 @@ class SSHTunnel:
 
     async def close(self) -> None:
         """Close the tunnel."""
+        if self.is_localhost:
+            return  # Nothing to close for localhost
         try:
             if self.listener:
                 self.listener.close()
@@ -133,6 +141,9 @@ class SSHManager:
         """
         Ensure an SSH tunnel exists to the remote machine's daemon port.
         Returns the local port number for accessing the daemon.
+
+        For localhost machines, no SSH tunnel is created; the daemon port
+        is returned directly.
         """
         # Check existing tunnel
         if machine_id in self.tunnels:
@@ -146,6 +157,18 @@ class SSHManager:
                 del self.tunnels[machine_id]
 
         machine = self._get_machine(machine_id)
+
+        # Localhost mode: no SSH, just ensure daemon is running locally
+        if machine.localhost:
+            logger.info(f"Localhost machine {machine_id}: using direct connection to port {machine.daemon_port}")
+            await self._ensure_daemon_local(machine)
+            tunnel = SSHTunnel(
+                machine_id, machine.daemon_port,
+                conn=None, listener=None, is_localhost=True,
+            )
+            self.tunnels[machine_id] = tunnel
+            return machine.daemon_port
+
         local_port = self._alloc_port()
 
         logger.info(f"Creating SSH tunnel: localhost:{local_port} -> {machine_id}:localhost:{machine.daemon_port}")
@@ -237,6 +260,137 @@ class SSHManager:
 
         raise RuntimeError(f"Daemon failed to start on {machine_id} after 30s")
 
+    async def _ensure_daemon_local(self, machine: MachineConfig) -> None:
+        """
+        Ensure the daemon is running locally (for localhost machines).
+        Spawns it as a local subprocess instead of via SSH.
+        """
+        install_dir = Path(self.config.daemon.install_dir).expanduser()
+
+        # Check if daemon is already running
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", "node.*remote-claude/daemon.*dist/server\\.js"],
+                capture_output=True, text=True
+            )
+            if result.stdout.strip():
+                logger.info(f"Local daemon already running (PID: {result.stdout.strip()})")
+                return
+        except FileNotFoundError:
+            pass  # pgrep not available, continue with startup
+
+        logger.info(f"Local daemon not running, starting on port {machine.daemon_port}...")
+
+        # Check if daemon code exists
+        dist_server = install_dir / "dist" / "server.js"
+        node_modules = install_dir / "node_modules"
+        if not dist_server.exists() or not node_modules.exists():
+            if self.config.daemon.auto_deploy:
+                await self._deploy_daemon_local(machine, install_dir)
+            else:
+                raise RuntimeError(
+                    f"Daemon not installed at {install_dir}. "
+                    "Set daemon.auto_deploy: true or install manually."
+                )
+
+        # Build environment with node and claude CLI on PATH
+        node_cmd = machine.node_path or "node"
+        log_file = Path(self.config.daemon.log_file).expanduser()
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+
+        env = os.environ.copy()
+        env["DAEMON_PORT"] = str(machine.daemon_port)
+        extra_paths = []
+        if machine.node_path:
+            extra_paths.append(str(Path(machine.node_path).parent))
+        home_local_bin = Path.home() / ".local" / "bin"
+        if home_local_bin.exists():
+            extra_paths.append(str(home_local_bin))
+        if extra_paths:
+            env["PATH"] = ":".join(extra_paths) + ":" + env.get("PATH", "")
+
+        # Start daemon as background process
+        with open(log_file, "a") as lf:
+            subprocess.Popen(
+                [node_cmd, "dist/server.js"],
+                cwd=str(install_dir),
+                env=env,
+                stdout=lf,
+                stderr=lf,
+                start_new_session=True,  # Detach from parent process
+            )
+
+        # Wait for daemon to be ready
+        import aiohttp
+        for attempt in range(15):
+            await asyncio.sleep(2)
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"http://127.0.0.1:{machine.daemon_port}/rpc",
+                        json={"method": "health.check"},
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as resp:
+                        data = await resp.json()
+                        result = data.get("result", data)
+                        if result.get("ok"):
+                            logger.info(f"Local daemon started on port {machine.daemon_port}")
+                            return
+            except Exception:
+                pass
+
+        raise RuntimeError(f"Local daemon failed to start after 30s")
+
+    async def _deploy_daemon_local(self, machine: MachineConfig, install_dir: Path) -> None:
+        """Deploy daemon code locally (for localhost machines)."""
+        logger.info(f"Deploying daemon locally to {install_dir}")
+
+        # Build daemon if needed
+        dist_dir = self._daemon_source / "dist"
+        if not dist_dir.exists():
+            logger.info("Building daemon locally...")
+            result = subprocess.run(
+                ["npm", "run", "build"],
+                cwd=str(self._daemon_source),
+                capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"Daemon build failed: {result.stderr}")
+
+        # Create install directory
+        install_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy files
+        import shutil as sh
+        for fname in ("package.json", "package-lock.json"):
+            src = self._daemon_source / fname
+            if src.exists():
+                sh.copy2(str(src), str(install_dir / fname))
+
+        dest_dist = install_dir / "dist"
+        if dest_dist.exists():
+            sh.rmtree(str(dest_dist))
+        sh.copytree(str(dist_dir), str(dest_dist))
+
+        # npm install
+        node_cmd = machine.node_path or "node"
+        node_bin_dir = str(Path(node_cmd).parent) if machine.node_path else None
+        npm_cmd = f"{node_bin_dir}/npm" if node_bin_dir else "npm"
+
+        env = os.environ.copy()
+        if node_bin_dir:
+            env["PATH"] = f"{node_bin_dir}:{env.get('PATH', '')}"
+
+        result = subprocess.run(
+            [npm_cmd, "install", "--production"],
+            cwd=str(install_dir),
+            capture_output=True, text=True, env=env,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"npm install failed locally: {result.stderr}")
+
+        logger.info(f"Daemon deployed locally to {install_dir}")
+
     async def _deploy_daemon(self, machine_id: str, conn: asyncssh.SSHClientConnection) -> None:
         """Deploy daemon code to remote machine via SCP."""
         install_dir = self.config.daemon.install_dir
@@ -309,6 +463,25 @@ class SSHManager:
 
         machine = self._get_machine(machine_id)
 
+        # Localhost: use local file copy
+        if machine.localhost:
+            try:
+                target = Path(remote_path)
+                claude_md_src = skills_dir / "CLAUDE.md"
+                if claude_md_src.exists() and not (target / "CLAUDE.md").exists():
+                    shutil.copy2(str(claude_md_src), str(target / "CLAUDE.md"))
+                    logger.info(f"Synced CLAUDE.md to local:{remote_path}")
+
+                skills_src = skills_dir / ".claude" / "skills"
+                if skills_src.exists():
+                    dest_skills = target / ".claude" / "skills"
+                    dest_skills.mkdir(parents=True, exist_ok=True)
+                    shutil.copytree(str(skills_src), str(dest_skills), dirs_exist_ok=True)
+                    logger.info(f"Synced .claude/skills/ to local:{remote_path}")
+            except Exception as e:
+                logger.warning(f"Skills sync failed for local:{remote_path}: {e}")
+            return
+
         # Get or create SSH connection
         if machine_id in self.tunnels and self.tunnels[machine_id].alive:
             conn = self.tunnels[machine_id].conn
@@ -354,22 +527,35 @@ class SSHManager:
 
             status = "unknown"
             daemon_status = "unknown"
-            try:
-                conn = await asyncio.wait_for(
-                    self._connect_ssh(machine),
-                    timeout=15.0,
-                )
+
+            if machine.localhost:
+                # Localhost machine: check directly
                 status = "online"
-                # Check if daemon is running
-                daemon_check = await conn.run(
-                    f"pgrep -f 'node.*dist/server\\.js' > /dev/null 2>&1 && echo 'running' || echo 'stopped'"
-                )
-                daemon_status = (daemon_check.stdout or "").strip()
-                conn.close()
-            except (asyncio.TimeoutError, OSError, asyncssh.Error) as e:
-                status = "offline"
-                daemon_status = "unknown"
-                logger.debug(f"list_machines: {machine_id} unreachable: {e}")
+                try:
+                    result = subprocess.run(
+                        ["pgrep", "-f", "node.*remote-claude/daemon.*dist/server\\.js"],
+                        capture_output=True, text=True,
+                    )
+                    daemon_status = "running" if result.stdout.strip() else "stopped"
+                except FileNotFoundError:
+                    daemon_status = "unknown"
+            else:
+                try:
+                    conn = await asyncio.wait_for(
+                        self._connect_ssh(machine),
+                        timeout=15.0,
+                    )
+                    status = "online"
+                    # Check if daemon is running
+                    daemon_check = await conn.run(
+                        f"pgrep -f 'node.*dist/server\\.js' > /dev/null 2>&1 && echo 'running' || echo 'stopped'"
+                    )
+                    daemon_status = (daemon_check.stdout or "").strip()
+                    conn.close()
+                except (asyncio.TimeoutError, OSError, asyncssh.Error) as e:
+                    status = "offline"
+                    daemon_status = "unknown"
+                    logger.debug(f"list_machines: {machine_id} unreachable: {e}")
 
             results.append({
                 "id": machine_id,
@@ -378,6 +564,7 @@ class SSHManager:
                 "status": status,
                 "daemon": daemon_status if status == "online" else "unknown",
                 "default_paths": machine.default_paths,
+                "localhost": machine.localhost,
             })
 
         return results
@@ -396,7 +583,7 @@ class SSHManager:
         remote_base: Optional[str] = None,
     ) -> dict[str, str]:
         """
-        SCP files to the remote machine.
+        SCP files to the remote machine (or local copy for localhost).
 
         Args:
             machine_id: Target machine ID.
@@ -409,6 +596,21 @@ class SSHManager:
         if not remote_base:
             remote_base = self.config.file_pool.remote_dir
 
+        machine = self._get_machine(machine_id)
+
+        if machine.localhost:
+            # Local copy
+            base = Path(remote_base)
+            base.mkdir(parents=True, exist_ok=True)
+            mapping: dict[str, str] = {}
+            for entry in file_entries:
+                remote_filename = f"{entry.file_id}_{entry.original_name}"
+                remote_path = str(base / remote_filename)
+                shutil.copy2(str(entry.local_path), remote_path)
+                mapping[entry.file_id] = remote_path
+                logger.info(f"Copied {entry.original_name} to local:{remote_path}")
+            return mapping
+
         # Get SSH connection (reuse tunnel connection)
         if machine_id not in self.tunnels or not self.tunnels[machine_id].alive:
             raise ValueError(f"No active tunnel to {machine_id}")
@@ -417,7 +619,7 @@ class SSHManager:
         # Ensure remote directory exists
         await conn.run(f"mkdir -p {remote_base}")
 
-        mapping: dict[str, str] = {}
+        mapping = {}
         for entry in file_entries:
             remote_filename = f"{entry.file_id}_{entry.original_name}"
             remote_path = f"{remote_base}/{remote_filename}"

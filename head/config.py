@@ -3,12 +3,17 @@ Configuration loader for Remote Claude Head Node.
 Reads config.yaml and expands environment variables.
 """
 
+import logging
 import os
 import re
 import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+
+from ruamel.yaml import YAML
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -24,6 +29,7 @@ class MachineConfig:
     daemon_port: int = 9100
     node_path: Optional[str] = None
     default_paths: list[str] = field(default_factory=list)
+    localhost: bool = False  # True if this machine is the head node itself
 
 
 @dataclass
@@ -95,6 +101,11 @@ def expand_env_vars(value: str) -> str:
     return re.sub(r'\$\{(\w+)\}', replacer, value)
 
 
+def _is_localhost(host: str) -> bool:
+    """Check if a host string refers to the local machine."""
+    return host.lower() in ("localhost", "127.0.0.1", "::1")
+
+
 def expand_path(path: str) -> str:
     """Expand ~ and environment variables in a path."""
     return str(Path(expand_env_vars(path)).expanduser())
@@ -127,6 +138,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
     raw: dict[str, Any] = _process_value(raw_data)
 
     config = Config()
+    config._config_path = str(config_file.resolve())  # type: ignore[attr-defined]
 
     # Parse machines
     machines_raw: dict[str, Any] = raw.get("machines", {})
@@ -144,6 +156,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
             daemon_port=md.get("daemon_port", 9100),
             node_path=md.get("node_path"),
             default_paths=md.get("default_paths", []),
+            localhost=md.get("localhost", _is_localhost(md.get("host", machine_id))),
         )
         config.machines[machine_id] = mc
 
@@ -193,3 +206,206 @@ def load_config(config_path: str = "config.yaml") -> Config:
         )
 
     return config
+
+
+# ─── Config Persistence (add/remove machines) ───
+
+
+def _get_config_path(config: Config) -> Path:
+    """Get the config file path. Falls back to 'config.yaml' in project root."""
+    if hasattr(config, '_config_path'):
+        return Path(config._config_path)  # type: ignore[attr-defined]
+    return Path(__file__).parent.parent / "config.yaml"
+
+
+def save_machine_to_config(config: Config, machine: MachineConfig) -> None:
+    """
+    Add or update a machine entry in config.yaml using ruamel.yaml
+    to preserve comments and formatting.
+    """
+    config_path = _get_config_path(config)
+    ryaml = YAML()
+    ryaml.preserve_quotes = True  # type: ignore[assignment]
+
+    with open(config_path) as f:
+        doc = ryaml.load(f)
+
+    if "machines" not in doc or doc["machines"] is None:
+        doc["machines"] = {}
+
+    # Build machine dict
+    m: dict[str, Any] = {}
+    m["host"] = machine.host
+    m["user"] = machine.user
+    if machine.ssh_key:
+        m["ssh_key"] = machine.ssh_key
+    if machine.port != 22:
+        m["port"] = machine.port
+    if machine.proxy_jump:
+        m["proxy_jump"] = machine.proxy_jump
+    if machine.proxy_command:
+        m["proxy_command"] = machine.proxy_command
+    if machine.password:
+        m["password"] = machine.password
+    m["daemon_port"] = machine.daemon_port
+    if machine.node_path:
+        m["node_path"] = machine.node_path
+    if machine.default_paths:
+        m["default_paths"] = machine.default_paths
+    if machine.localhost:
+        m["localhost"] = True
+
+    doc["machines"][machine.id] = m
+
+    with open(config_path, "w") as f:
+        ryaml.dump(doc, f)
+
+    logger.info(f"Saved machine '{machine.id}' to {config_path}")
+
+
+def remove_machine_from_config(config: Config, machine_id: str) -> None:
+    """
+    Remove a machine entry from config.yaml using ruamel.yaml
+    to preserve comments and formatting.
+    """
+    config_path = _get_config_path(config)
+    ryaml = YAML()
+    ryaml.preserve_quotes = True  # type: ignore[assignment]
+
+    with open(config_path) as f:
+        doc = ryaml.load(f)
+
+    if "machines" in doc and doc["machines"] and machine_id in doc["machines"]:
+        del doc["machines"][machine_id]
+        with open(config_path, "w") as f:
+            ryaml.dump(doc, f)
+        logger.info(f"Removed machine '{machine_id}' from {config_path}")
+    else:
+        logger.warning(f"Machine '{machine_id}' not found in {config_path}")
+
+
+# ─── SSH Config Parser ───
+
+
+@dataclass
+class SSHHostEntry:
+    """Parsed entry from ~/.ssh/config."""
+    name: str
+    hostname: Optional[str] = None
+    user: Optional[str] = None
+    port: int = 22
+    proxy_jump: Optional[str] = None
+    proxy_command: Optional[str] = None
+    identity_file: Optional[str] = None
+
+
+def parse_ssh_config(config_path: Optional[str] = None) -> list[SSHHostEntry]:
+    """
+    Parse ~/.ssh/config (including Include directives) and return
+    a list of SSHHostEntry objects.
+
+    Skips wildcard hosts (e.g., Host *) and github.com.
+    """
+    if config_path is None:
+        config_path = str(Path.home() / ".ssh" / "config")
+
+    path = Path(config_path)
+    if not path.exists():
+        return []
+
+    return _parse_ssh_config_file(path, set())
+
+
+def _parse_ssh_config_file(path: Path, visited: set[str]) -> list[SSHHostEntry]:
+    """Recursively parse an SSH config file, handling Include directives."""
+    resolved = path.resolve()
+    if str(resolved) in visited:
+        return []
+    visited.add(str(resolved))
+
+    entries: list[SSHHostEntry] = []
+    current: Optional[SSHHostEntry] = None
+
+    try:
+        lines = path.read_text().splitlines()
+    except (OSError, PermissionError):
+        return []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        # Parse key-value
+        parts = stripped.split(None, 1)
+        if len(parts) < 2:
+            continue
+
+        key = parts[0].lower()
+        value = parts[1].strip().strip('"')
+
+        if key == "include":
+            # Resolve include path relative to the SSH config directory
+            include_pattern = value
+            if include_pattern.startswith("~"):
+                include_pattern = str(Path.home()) + include_pattern[1:]
+            elif not include_pattern.startswith("/"):
+                include_pattern = str(path.parent / include_pattern)
+
+            # Handle glob patterns
+            from glob import glob as globfn
+            for inc_path in sorted(globfn(include_pattern)):
+                entries.extend(_parse_ssh_config_file(Path(inc_path), visited))
+            continue
+
+        if key == "host":
+            # New host block
+            host_name = value
+            # Skip wildcard and github entries
+            if "*" in host_name or host_name.lower() == "github.com":
+                current = None
+                continue
+            current = SSHHostEntry(name=host_name)
+            entries.append(current)
+            continue
+
+        if current is None:
+            continue
+
+        if key == "hostname":
+            current.hostname = value
+        elif key == "user":
+            current.user = value
+        elif key == "port":
+            try:
+                current.port = int(value)
+            except ValueError:
+                pass
+        elif key == "proxyjump":
+            current.proxy_jump = value
+        elif key == "proxycommand":
+            current.proxy_command = value
+        elif key == "identityfile":
+            current.identity_file = value
+
+    return entries
+
+
+def format_ssh_hosts_for_display(entries: list[SSHHostEntry]) -> str:
+    """Format SSH host entries for display in chat, with index numbers."""
+    if not entries:
+        return "No SSH hosts found in `~/.ssh/config`."
+
+    lines = [f"**SSH Hosts** ({len(entries)} found):"]
+    lines.append("```")
+    for i, e in enumerate(entries, 1):
+        host_str = e.hostname or "(no hostname)"
+        user_str = f"  user={e.user}" if e.user else ""
+        proxy_str = f"  proxy={e.proxy_jump}" if e.proxy_jump else ""
+        port_str = f"  port={e.port}" if e.port != 22 else ""
+        lines.append(f"{i:3d}. {e.name:<25s} {host_str}{user_str}{proxy_str}{port_str}")
+    lines.append("```")
+    lines.append(
+        "\nReply with the **numbers** of hosts to add (e.g., `1 3 5`)."
+    )
+    return "\n".join(lines)

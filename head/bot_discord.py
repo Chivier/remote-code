@@ -368,6 +368,85 @@ class DiscordBot(BotBase):
             ]
             return [app_commands.Choice(name=m, value=m) for m in machines][:25]
 
+        # --- /add-machine ---
+        @tree.command(name="add-machine", description="Add a new remote machine")
+        @app_commands.describe(
+            machine_id="Unique ID for the machine (e.g. dice-gala2)",
+            host="Hostname or IP address (or 'localhost')",
+            user="SSH username",
+            proxy_jump="Jump host machine ID (optional)",
+            node_path="Path to node binary on remote (optional)",
+            daemon_port="Daemon port (default: 9100)",
+            paths="Comma-separated default project paths (optional)",
+        )
+        async def slash_add_machine(
+            interaction: discord.Interaction,
+            machine_id: str,
+            host: str,
+            user: str,
+            proxy_jump: Optional[str] = None,
+            node_path: Optional[str] = None,
+            daemon_port: Optional[int] = 9100,
+            paths: Optional[str] = None,
+        ) -> None:
+            await interaction.response.defer()
+            channel_id = self._defer_and_register(interaction)
+            args_list = [machine_id, host, user]
+            if proxy_jump:
+                args_list.extend(["--proxy-jump", proxy_jump])
+            if node_path:
+                args_list.extend(["--node-path", node_path])
+            if daemon_port and daemon_port != 9100:
+                args_list.extend(["--daemon-port", str(daemon_port)])
+            if paths:
+                args_list.extend(["--paths", paths])
+            try:
+                await self.cmd_add_machine(channel_id, args_list)
+            except Exception as e:
+                await self.send_message(channel_id, format_error(str(e)))
+
+        @slash_add_machine.autocomplete("proxy_jump")
+        async def add_machine_proxy_autocomplete(
+            interaction: discord.Interaction, current: str
+        ) -> list[app_commands.Choice[str]]:
+            machines = [
+                mid for mid in self.config.machines
+                if current.lower() in mid.lower()
+            ]
+            return [app_commands.Choice(name=m, value=m) for m in machines][:25]
+
+        # --- /add-machine-ssh (separate command for --from-ssh since slash commands can't mix) ---
+        @tree.command(name="import-ssh", description="Import machines from SSH config")
+        async def slash_import_ssh(interaction: discord.Interaction) -> None:
+            await interaction.response.defer()
+            channel_id = self._defer_and_register(interaction)
+            try:
+                await self.cmd_add_machine(channel_id, ["--from-ssh"])
+            except Exception as e:
+                await self.send_message(channel_id, format_error(str(e)))
+
+        # --- /remove-machine ---
+        @tree.command(name="remove-machine", description="Remove a machine from config")
+        @app_commands.describe(machine="Machine ID to remove")
+        async def slash_remove_machine(interaction: discord.Interaction, machine: str) -> None:
+            await interaction.response.defer()
+            channel_id = self._defer_and_register(interaction)
+            try:
+                await self.cmd_remove_machine(channel_id, [machine])
+            except Exception as e:
+                await self.send_message(channel_id, format_error(str(e)))
+
+        @slash_remove_machine.autocomplete("machine")
+        async def remove_machine_autocomplete(
+            interaction: discord.Interaction, current: str
+        ) -> list[app_commands.Choice[str]]:
+            jump_hosts = {m.proxy_jump for m in self.config.machines.values() if m.proxy_jump}
+            machines = [
+                mid for mid in self.config.machines
+                if mid not in jump_hosts and current.lower() in mid.lower()
+            ]
+            return [app_commands.Choice(name=m, value=m) for m in machines][:25]
+
     # --- Typing Indicator ---
 
     async def _start_typing(self, channel_id: str) -> None:

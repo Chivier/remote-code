@@ -148,7 +148,8 @@ def format_machine_list(machines: list[dict[str, Any]]) -> str:
     for m in machines:
         status_icon = "🟢" if m.get("status") == "online" else "🔴"
         daemon_icon = "⚡" if m.get("daemon") == "running" else "💤"
-        line = f"{status_icon} **{m['id']}** ({m['host']}) {daemon_icon}"
+        local_tag = " [localhost]" if m.get("localhost") else ""
+        line = f"{status_icon} **{m['id']}** ({m['host']}){local_tag} {daemon_icon}"
         if m.get("default_paths"):
             paths = ", ".join(f"`{p}`" for p in m["default_paths"])
             line += f"\n  Paths: {paths}"
