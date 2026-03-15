@@ -384,11 +384,11 @@ class DiscordBot(BotBase):
             return [app_commands.Choice(name=m, value=m) for m in machines][:25]
 
         # --- /add-machine ---
-        @tree.command(name="add-machine", description="Add a new remote machine")
+        @tree.command(name="add-machine", description="Add a machine (auto-resolves from SSH config)")
         @app_commands.describe(
-            machine_id="Unique ID for the machine (e.g. dice-gala2)",
-            host="Hostname or IP address (or 'localhost')",
-            user="SSH username",
+            machine_id="Machine name (if in SSH config, host/user auto-filled)",
+            host="Hostname or IP (optional if in SSH config)",
+            user="SSH username (optional if in SSH config)",
             proxy_jump="Jump host machine ID (optional)",
             node_path="Path to node binary on remote (optional)",
             daemon_port="Daemon port (default: 9100)",
@@ -397,8 +397,8 @@ class DiscordBot(BotBase):
         async def slash_add_machine(
             interaction: discord.Interaction,
             machine_id: str,
-            host: str,
-            user: str,
+            host: Optional[str] = None,
+            user: Optional[str] = None,
             proxy_jump: Optional[str] = None,
             node_path: Optional[str] = None,
             daemon_port: Optional[int] = 9100,
@@ -406,7 +406,11 @@ class DiscordBot(BotBase):
         ) -> None:
             await interaction.response.defer()
             channel_id = self._defer_and_register(interaction)
-            args_list = [machine_id, host, user]
+            args_list: list[str] = []
+            if host and user:
+                args_list = [machine_id, host, user]
+            else:
+                args_list = [machine_id]
             if proxy_jump:
                 args_list.extend(["--proxy-jump", proxy_jump])
             if node_path:
@@ -419,6 +423,19 @@ class DiscordBot(BotBase):
                 await self.cmd_add_machine(channel_id, args_list)
             except Exception as e:
                 await self.send_message(channel_id, format_error(str(e)))
+
+        @slash_add_machine.autocomplete("machine_id")
+        async def add_machine_id_autocomplete(
+            interaction: discord.Interaction, current: str
+        ) -> list[app_commands.Choice[str]]:
+            # Suggest SSH config hosts that aren't already configured
+            from .config import parse_ssh_config
+            existing = set(self.config.machines.keys())
+            ssh_hosts = [
+                e.name for e in parse_ssh_config()
+                if e.name not in existing and current.lower() in e.name.lower()
+            ]
+            return [app_commands.Choice(name=h, value=h) for h in ssh_hosts][:25]
 
         @slash_add_machine.autocomplete("proxy_jump")
         async def add_machine_proxy_autocomplete(

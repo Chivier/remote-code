@@ -502,55 +502,60 @@ class BotBase(ABC):
             await self.send_message(channel_id, format_error(f"Monitor failed for {machine_id}: {e}"))
 
     async def cmd_add_machine(self, channel_id: str, args: list[str]) -> None:
-        """/add-machine <id> <host> <user> [options] | /add-machine --from-ssh"""
+        """
+        /add-machine <name> [host] [user] [options]
+
+        If only <name> is given, tries to resolve from ~/.ssh/config.
+        If <name> <host> <user> are given, uses those directly.
+        """
         if not args:
             await self.send_message(
                 channel_id,
                 "Usage:\n"
-                "`/add-machine <id> <host> <user> [options]`\n"
-                "`/add-machine --from-ssh` — Import from SSH config\n\n"
-                "Options:\n"
-                "  `--proxy-jump <machine>` — Jump host\n"
-                "  `--node-path <path>` — Path to node binary\n"
-                "  `--password <pwd>` — SSH password (or file:/path)\n"
-                "  `--port <n>` — SSH port (default: 22)\n"
-                "  `--daemon-port <n>` — Daemon port (default: 9100)\n"
-                "  `--paths <p1,p2,...>` — Default project paths"
+                "`/add-machine <name>` — Add from SSH config\n"
+                "`/add-machine <name> <host> <user> [options]` — Manual\n"
+                "`/add-machine --from-ssh` — List all SSH hosts to import\n\n"
+                "Options: `--proxy-jump`, `--node-path`, `--password`, "
+                "`--port`, `--daemon-port`, `--paths`"
             )
             return
 
-        # Check for --from-ssh mode
+        # --from-ssh: interactive batch import
         if args[0] == "--from-ssh":
             await self._add_machine_from_ssh(channel_id)
             return
 
-        # Inline mode: /add-machine <id> <host> <user> [options...]
-        if len(args) < 3:
-            await self.send_message(
-                channel_id,
-                "Usage: `/add-machine <id> <host> <user> [options]`\n"
-                "Or: `/add-machine --from-ssh`"
-            )
-            return
-
         machine_id = args[0]
-        host = args[1]
-        user = args[2]
 
         # Check for duplicate
         if machine_id in self.config.machines:
-            await self.send_message(channel_id, f"Machine `{machine_id}` already exists. Remove it first with `/remove-machine {machine_id}`.")
+            await self.send_message(
+                channel_id,
+                f"Machine `{machine_id}` already exists. "
+                f"Remove it first with `/remove-machine {machine_id}`."
+            )
             return
 
-        # Parse optional flags from remaining args
+        # Parse optional flags from remaining args (skip first 1 or 3 positional args)
         proxy_jump = None
         node_path = None
         password = None
         port = 22
         daemon_port = 9100
         paths: list[str] = []
+        host: str | None = None
+        user: str | None = None
 
-        i = 3
+        if len(args) >= 3 and not args[1].startswith("--"):
+            # /add-machine <id> <host> <user> [opts...]
+            host = args[1]
+            user = args[2]
+            flag_start = 3
+        else:
+            # /add-machine <id> [opts...] — resolve from SSH config
+            flag_start = 1
+
+        i = flag_start
         while i < len(args):
             flag = args[i]
             if flag == "--proxy-jump" and i + 1 < len(args):
@@ -582,6 +587,45 @@ class BotBase(ABC):
             else:
                 await self.send_message(channel_id, f"Unknown option: `{flag}`")
                 return
+
+        # If host/user not provided, try SSH config
+        if host is None or user is None:
+            ssh_entries = parse_ssh_config()
+            match = next((e for e in ssh_entries if e.name == machine_id), None)
+            if match is None:
+                await self.send_message(
+                    channel_id,
+                    f"Machine `{machine_id}` not found in SSH config.\n"
+                    f"Specify host and user: `/add-machine {machine_id} <host> <user>`\n"
+                    f"Or use `/add-machine --from-ssh` to browse available hosts."
+                )
+                return
+
+            host = host or match.hostname or match.name
+            user = user or match.user or os.environ.get("USER", "root")
+            if port == 22 and match.port != 22:
+                port = match.port
+            if proxy_jump is None and match.proxy_jump:
+                # Only use SSH config proxy_jump if the jump host is already
+                # configured as a machine (otherwise it won't work)
+                if match.proxy_jump in self.config.machines:
+                    proxy_jump = match.proxy_jump
+                else:
+                    await self.send_message(
+                        channel_id,
+                        f"Found `{machine_id}` in SSH config (host=`{host}`, user=`{user}`).\n"
+                        f"**Note:** SSH config specifies proxy_jump=`{match.proxy_jump}` "
+                        f"but it's not configured as a machine yet. "
+                        f"Add `{match.proxy_jump}` first, or specify `--proxy-jump` manually."
+                    )
+                    return
+
+            await self.send_message(
+                channel_id,
+                f"Resolved `{machine_id}` from SSH config: "
+                f"host=`{host}`, user=`{user}`"
+                + (f", proxy=`{proxy_jump}`" if proxy_jump else "")
+            )
 
         # Validate proxy_jump references an existing machine
         if proxy_jump and proxy_jump not in self.config.machines:
@@ -929,8 +973,8 @@ class BotBase(ABC):
 `/status` - Show current session info
 `/health [machine]` - Check daemon health
 `/monitor [machine]` - Monitor session details & queues
-`/add-machine <id> <host> <user> [opts]` - Add a machine
-`/add-machine --from-ssh` - Import from SSH config
+`/add-machine <name>` - Add machine (from SSH config)
+`/add-machine --from-ssh` - Browse all SSH hosts
 `/remove-machine <machine>` - Remove a machine
 `/update` - Pull latest code and restart (admin)
 `/restart` - Restart head node (admin)
