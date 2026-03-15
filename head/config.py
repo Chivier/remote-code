@@ -103,8 +103,44 @@ def expand_env_vars(value: str) -> str:
 
 
 def _is_localhost(host: str) -> bool:
-    """Check if a host string refers to the local machine."""
-    return host.lower() in ("localhost", "127.0.0.1", "::1")
+    """Check if a host string refers to the local machine.
+
+    Checks against: localhost, 127.0.0.1, ::1, current hostname,
+    and all local network interface IPs.
+    """
+    host_lower = host.lower()
+    if host_lower in ("localhost", "127.0.0.1", "::1"):
+        return True
+
+    import socket
+    # Check hostname
+    try:
+        if host_lower == socket.gethostname().lower():
+            return True
+        if host_lower == socket.getfqdn().lower():
+            return True
+    except Exception:
+        pass
+
+    # Check all local IPs
+    try:
+        local_ips = set()
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            local_ips.add(info[4][0])
+        # Also grab IPs from all interfaces via subprocess (more reliable)
+        import subprocess
+        result = subprocess.run(
+            ["hostname", "-I"], capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            for ip in result.stdout.strip().split():
+                local_ips.add(ip.strip())
+        if host in local_ips:
+            return True
+    except Exception:
+        pass
+
+    return False
 
 
 def expand_path(path: str) -> str:
