@@ -54,9 +54,9 @@ impl SessionPool {
         // Expand ~ to home directory
         let expanded_path = expand_tilde(path);
 
-        // Validate path exists
+        // Validate path exists on the remote machine
         if !Path::new(&expanded_path).exists() {
-            return Err(format!("Path does not exist: {}", expanded_path));
+            return Err(format!("Path does not exist on remote machine: {}", expanded_path));
         }
 
         let session_id = Uuid::new_v4().to_string();

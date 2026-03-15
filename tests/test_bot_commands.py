@@ -862,16 +862,15 @@ class TestFullMessageFlow:
 
 class TestStartTildeExpansion:
     @pytest.mark.asyncio
-    async def test_tilde_expanded_in_path(self, bot, mock_daemon):
-        """~/Projects should be expanded to /home/user/Projects."""
+    async def test_tilde_preserved_in_path(self, bot, mock_daemon):
+        """~/Projects should be passed through to daemon (daemon expands ~ on remote)."""
         await bot.cmd_start("discord:100", ["gpu-1", "~/Projects/myapp"])
         # Check what path was passed to create_session
         call_args = mock_daemon.create_session.call_args
         if call_args:
             # The second positional arg is the path
             actual_path = call_args[0][1]
-            assert not actual_path.startswith("~"), f"Path not expanded: {actual_path}"
-            assert "Projects/myapp" in actual_path
+            assert actual_path == "~/Projects/myapp", f"Path should be preserved: {actual_path}"
 
     @pytest.mark.asyncio
     async def test_absolute_path_unchanged(self, bot, mock_daemon):

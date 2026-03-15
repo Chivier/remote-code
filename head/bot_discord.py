@@ -227,16 +227,22 @@ class DiscordBot(BotBase):
             machine_id = None
             if interaction.namespace and hasattr(interaction.namespace, "machine"):
                 machine_id = interaction.namespace.machine
-            paths: list[str] = []
+            paths: set[str] = set()
+            # Add default_paths from config
             if machine_id and machine_id in self.config.machines:
-                paths = self.config.machines[machine_id].default_paths
+                paths.update(self.config.machines[machine_id].default_paths)
             elif self.config.machines:
                 for mc in self.config.machines.values():
-                    paths.extend(mc.default_paths)
-                paths = list(set(paths))
+                    paths.update(mc.default_paths)
+            # Add paths from active/detached sessions on this machine
+            sessions = self.router.list_sessions(machine_id)
+            for s in sessions:
+                if s.status in ("active", "detached"):
+                    paths.add(s.path)
+            sorted_paths = sorted(paths)
             return [
                 app_commands.Choice(name=p, value=p)
-                for p in paths
+                for p in sorted_paths
                 if current.lower() in p.lower()
             ][:25]
 

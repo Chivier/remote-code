@@ -74,6 +74,7 @@ class SSHManager:
         self.tunnels: dict[str, SSHTunnel] = {}
         self._next_port = 19100  # Starting port for local tunnel endpoints
         self._daemon_source = Path(__file__).parent.parent / "daemon"
+        self._rust_binary = Path(__file__).parent.parent / "target" / "release" / "remote-claude-daemon"
 
     def _alloc_port(self) -> int:
         """Allocate a local port for SSH tunnel."""
@@ -197,8 +198,7 @@ class SSHManager:
         install_dir = self.config.daemon.install_dir
 
         # Check if daemon is already running
-        # The process is: node dist/server.js (in install_dir)
-        result = await conn.run(f"pgrep -f 'node.*dist/server\\.js' || true")
+        result = await conn.run(f"pgrep -f 'remote-claude-daemon' || true")
         stdout = result.stdout.strip() if result.stdout else ""
 
         if stdout:
@@ -207,9 +207,10 @@ class SSHManager:
 
         logger.info(f"Daemon not running on {machine_id}, starting...")
 
-        # Check if daemon code exists on remote (both dist and node_modules)
+        # Check if daemon binary exists on remote
+        binary_path = f"{install_dir}/remote-claude-daemon"
         check_result = await conn.run(
-            f"test -f {install_dir}/dist/server.js -a -d {install_dir}/node_modules && echo 'exists' || echo 'missing'"
+            f"test -x {binary_path} && echo 'exists' || echo 'missing'"
         )
         check_out = check_result.stdout.strip() if check_result.stdout else ""
 
@@ -222,26 +223,17 @@ class SSHManager:
                     "Set daemon.auto_deploy: true or install manually."
                 )
 
-        # Determine node path and build PATH with common binary locations
-        node_cmd = machine.node_path or "node"
         log_file = self.config.daemon.log_file
 
-        # Build a PATH that includes node bin dir, ~/.local/bin (for claude CLI), etc.
-        # This PATH is inherited by the daemon process and all its child processes
-        # (including claude CLI spawned by session-pool.ts)
-        extra_paths = []
-        if machine.node_path:
-            from pathlib import PurePosixPath
-            extra_paths.append(str(PurePosixPath(machine.node_path).parent))
-        extra_paths.append(f"/home/{machine.user}/.local/bin")
+        # Build PATH that includes ~/.local/bin (for claude CLI)
+        extra_paths = [f"/home/{machine.user}/.local/bin"]
         path_value = ":".join(extra_paths) + ":$PATH"
 
         # Start daemon with enriched PATH
         start_cmd = (
-            f"cd {install_dir} && "
             f"DAEMON_PORT={machine.daemon_port} "
             f"PATH={path_value} "
-            f"nohup {node_cmd} dist/server.js > {log_file} 2>&1 &"
+            f"nohup {binary_path} > {log_file} 2>&1 &"
         )
         await conn.run(start_cmd)
 
@@ -270,7 +262,7 @@ class SSHManager:
         # Check if daemon is already running
         try:
             result = subprocess.run(
-                ["pgrep", "-f", "node.*remote-claude/daemon.*dist/server\\.js"],
+                ["pgrep", "-f", "remote-claude-daemon"],
                 capture_output=True, text=True
             )
             if result.stdout.strip():
@@ -281,10 +273,9 @@ class SSHManager:
 
         logger.info(f"Local daemon not running, starting on port {machine.daemon_port}...")
 
-        # Check if daemon code exists
-        dist_server = install_dir / "dist" / "server.js"
-        node_modules = install_dir / "node_modules"
-        if not dist_server.exists() or not node_modules.exists():
+        # Check if daemon binary exists
+        binary_path = install_dir / "remote-claude-daemon"
+        if not binary_path.exists():
             if self.config.daemon.auto_deploy:
                 await self._deploy_daemon_local(machine, install_dir)
             else:
@@ -293,26 +284,19 @@ class SSHManager:
                     "Set daemon.auto_deploy: true or install manually."
                 )
 
-        # Build environment with node and claude CLI on PATH
-        node_cmd = machine.node_path or "node"
         log_file = Path(self.config.daemon.log_file).expanduser()
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
         env = os.environ.copy()
         env["DAEMON_PORT"] = str(machine.daemon_port)
-        extra_paths = []
-        if machine.node_path:
-            extra_paths.append(str(Path(machine.node_path).parent))
         home_local_bin = Path.home() / ".local" / "bin"
         if home_local_bin.exists():
-            extra_paths.append(str(home_local_bin))
-        if extra_paths:
-            env["PATH"] = ":".join(extra_paths) + ":" + env.get("PATH", "")
+            env["PATH"] = str(home_local_bin) + ":" + env.get("PATH", "")
 
         # Start daemon as background process
         with open(log_file, "a") as lf:
             subprocess.Popen(
-                [node_cmd, "dist/server.js"],
+                [str(binary_path)],
                 cwd=str(install_dir),
                 env=env,
                 stdout=lf,
@@ -342,71 +326,43 @@ class SSHManager:
         raise RuntimeError(f"Local daemon failed to start after 30s")
 
     async def _deploy_daemon_local(self, machine: MachineConfig, install_dir: Path) -> None:
-        """Deploy daemon code locally (for localhost machines)."""
+        """Deploy daemon binary locally (for localhost machines)."""
         logger.info(f"Deploying daemon locally to {install_dir}")
 
-        # Build daemon if needed
-        dist_dir = self._daemon_source / "dist"
-        if not dist_dir.exists():
-            logger.info("Building daemon locally...")
+        # Build Rust daemon if needed
+        if not self._rust_binary.exists():
+            logger.info("Building Rust daemon locally...")
+            project_root = Path(__file__).parent.parent
             result = subprocess.run(
-                ["npm", "run", "build"],
-                cwd=str(self._daemon_source),
+                ["cargo", "build", "--release"],
+                cwd=str(project_root),
                 capture_output=True, text=True,
             )
             if result.returncode != 0:
                 raise RuntimeError(f"Daemon build failed: {result.stderr}")
 
-        # Create install directory
+        # Create install directory and copy binary
         install_dir.mkdir(parents=True, exist_ok=True)
-
-        # Copy files
-        import shutil as sh
-        for fname in ("package.json", "package-lock.json"):
-            src = self._daemon_source / fname
-            if src.exists():
-                sh.copy2(str(src), str(install_dir / fname))
-
-        dest_dist = install_dir / "dist"
-        if dest_dist.exists():
-            sh.rmtree(str(dest_dist))
-        sh.copytree(str(dist_dir), str(dest_dist))
-
-        # npm install
-        node_cmd = machine.node_path or "node"
-        node_bin_dir = str(Path(node_cmd).parent) if machine.node_path else None
-        npm_cmd = f"{node_bin_dir}/npm" if node_bin_dir else "npm"
-
-        env = os.environ.copy()
-        if node_bin_dir:
-            env["PATH"] = f"{node_bin_dir}:{env.get('PATH', '')}"
-
-        result = subprocess.run(
-            [npm_cmd, "install", "--production"],
-            cwd=str(install_dir),
-            capture_output=True, text=True, env=env,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"npm install failed locally: {result.stderr}")
+        dest_binary = install_dir / "remote-claude-daemon"
+        shutil.copy2(str(self._rust_binary), str(dest_binary))
+        dest_binary.chmod(0o755)
 
         logger.info(f"Daemon deployed locally to {install_dir}")
 
     async def _deploy_daemon(self, machine_id: str, conn: asyncssh.SSHClientConnection) -> None:
-        """Deploy daemon code to remote machine via SCP."""
+        """Deploy daemon binary to remote machine via SCP."""
         install_dir = self.config.daemon.install_dir
-        machine = self._get_machine(machine_id)
 
         logger.info(f"Deploying daemon to {machine_id}:{install_dir}")
 
-        # Build daemon locally first if needed
-        dist_dir = self._daemon_source / "dist"
-        if not dist_dir.exists():
-            logger.info("Building daemon locally...")
+        # Build Rust daemon locally first if needed
+        if not self._rust_binary.exists():
+            logger.info("Building Rust daemon locally...")
+            project_root = Path(__file__).parent.parent
             result = subprocess.run(
-                ["npm", "run", "build"],
-                cwd=str(self._daemon_source),
-                capture_output=True,
-                text=True,
+                ["cargo", "build", "--release"],
+                cwd=str(project_root),
+                capture_output=True, text=True,
             )
             if result.returncode != 0:
                 raise RuntimeError(f"Daemon build failed: {result.stderr}")
@@ -414,40 +370,10 @@ class SSHManager:
         # Create remote directory
         await conn.run(f"mkdir -p {install_dir}")
 
-        # SCP files to remote
-        # We use asyncssh.scp for file transfer
-        scp_files = [
-            (self._daemon_source / "package.json", f"{install_dir}/package.json"),
-            (self._daemon_source / "package-lock.json", f"{install_dir}/package-lock.json"),
-        ]
-
-        for local_path, remote_path in scp_files:
-            if local_path.exists():
-                await asyncssh.scp(str(local_path), (conn, remote_path))
-
-        # SCP dist directory
-        await asyncssh.scp(str(dist_dir), (conn, f"{install_dir}/dist"), recurse=True)
-
-        # Install dependencies on remote
-        node_cmd = machine.node_path or "node"
-        # Derive npm path from node path: replace the last path component only
-        if machine.node_path:
-            from pathlib import PurePosixPath
-            node_bin_dir = str(PurePosixPath(machine.node_path).parent)
-            npm_cmd = f"{node_bin_dir}/npm"
-        else:
-            node_bin_dir = None
-            npm_cmd = "npm"
-
-        # Prepend node bin dir to PATH so npm can find node
-        path_prefix = f"export PATH={node_bin_dir}:$PATH && " if node_bin_dir else ""
-
-        install_result = await conn.run(
-            f"{path_prefix}cd {install_dir} && {npm_cmd} install --production 2>&1"
-        )
-        if install_result.exit_status != 0:
-            stderr = install_result.stderr or install_result.stdout or ""
-            raise RuntimeError(f"npm install failed on {machine_id}: {stderr}")
+        # SCP binary to remote
+        remote_binary = f"{install_dir}/remote-claude-daemon"
+        await asyncssh.scp(str(self._rust_binary), (conn, remote_binary))
+        await conn.run(f"chmod +x {remote_binary}")
 
         logger.info(f"Daemon deployed to {machine_id}")
 
@@ -533,7 +459,7 @@ class SSHManager:
                 status = "online"
                 try:
                     result = subprocess.run(
-                        ["pgrep", "-f", "node.*remote-claude/daemon.*dist/server\\.js"],
+                        ["pgrep", "-f", "remote-claude-daemon"],
                         capture_output=True, text=True,
                     )
                     daemon_status = "running" if result.stdout.strip() else "stopped"
@@ -548,7 +474,7 @@ class SSHManager:
                     status = "online"
                     # Check if daemon is running
                     daemon_check = await conn.run(
-                        f"pgrep -f 'node.*dist/server\\.js' > /dev/null 2>&1 && echo 'running' || echo 'stopped'"
+                        f"pgrep -f 'remote-claude-daemon' > /dev/null 2>&1 && echo 'running' || echo 'stopped'"
                     )
                     daemon_status = (daemon_check.stdout or "").strip()
                     conn.close()

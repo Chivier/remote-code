@@ -198,16 +198,15 @@ class BotBase(ABC):
         if len(args) < 2:
             await self.send_message(
                 channel_id,
-                "Usage: `/start <machine_id> <path>`\nExample: `/start gpu-1 /home/user/project`"
+                "Usage: `/start <machine_id> <remote_path>`\nExample: `/start gpu-1 ~/project` (path on the remote machine)"
             )
             return
 
         machine_id = args[0]
         path = args[1]
 
-        # Expand ~ to user home directory
-        if path.startswith("~/") or path == "~":
-            path = str(Path.home() / path[2:]) if path != "~" else str(Path.home())
+        # Don't expand ~ here — the daemon expands it on the remote machine
+        # using the correct remote user's home directory
 
         if not silent_init:
             await self.send_message(channel_id, f"Starting session on **{machine_id}**:`{path}`...")
