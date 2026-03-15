@@ -1,0 +1,29 @@
+[package]
+name = "remote-claude-daemon"
+version = "0.1.0"
+edition = "2021"
+description = "Remote Claude daemon - manages Claude CLI sessions via JSON-RPC over HTTP"
+
+[[bin]]
+name = "remote-claude-daemon"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+tower-http = { version = "0.6", features = ["cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "6"
+tokio-stream = "0.1.18"
+nix = { version = "0.31.2", features = ["signal", "process"] }
+futures-core = "0.3.32"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

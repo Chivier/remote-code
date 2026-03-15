@@ -26,6 +26,9 @@ daemon.log
 # mdBook build output
 book/
 
+# Rust build artifacts
+target/
+
 # OS
 .DS_Store
 Thumbs.db
