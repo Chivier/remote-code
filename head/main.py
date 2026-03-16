@@ -119,7 +119,7 @@ async def main(config_path: str = "") -> None:
             telegram_adapter = TelegramAdapter(config.bot.telegram)
             telegram_engine = BotEngine(
                 telegram_adapter, ssh_manager, session_router,
-                daemon_client, config,
+                daemon_client, config, file_pool,
             )
             telegram_adapter.set_input_handler(telegram_engine.handle_input)
             adapters.append(telegram_adapter)
