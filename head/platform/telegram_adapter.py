@@ -307,7 +307,8 @@ class TelegramAdapter:
 
         # Register command handlers
         command_names = [
-            "start", "resume", "ls", "list", "exit", "rm", "remove",
+            "start", "resume", "new", "clear",
+            "ls", "list", "exit", "rm", "remove",
             "destroy", "mode", "status", "rename", "interrupt",
             "health", "monitor", "help",
             "add_machine", "remove_machine", "update", "restart",
@@ -330,6 +331,8 @@ class TelegramAdapter:
             await self._bot.set_my_commands([
                 BotCommand("start", "Start a new Claude session"),
                 BotCommand("resume", "Resume a previous session"),
+                BotCommand("new", "New session in same directory"),
+                BotCommand("clear", "Clear context and restart session"),
                 BotCommand("ls", "List machines or sessions"),
                 BotCommand("exit", "Detach from current session"),
                 BotCommand("mode", "Switch permission mode"),
@@ -337,7 +340,6 @@ class TelegramAdapter:
                 BotCommand("interrupt", "Interrupt Claude"),
                 BotCommand("rename", "Rename current session"),
                 BotCommand("health", "Check daemon health"),
-                BotCommand("monitor", "Monitor session details"),
                 BotCommand("help", "Show available commands"),
             ])
         except Exception as e:

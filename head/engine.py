@@ -205,6 +205,10 @@ class BotEngine:
                 await self.cmd_restart(channel_id, user_id)
             elif cmd == "/update":
                 await self.cmd_update(channel_id, user_id)
+            elif cmd == "/clear":
+                await self.cmd_clear(channel_id)
+            elif cmd == "/new":
+                await self.cmd_new(channel_id)
             elif cmd == "/help":
                 await self.cmd_help(channel_id)
             else:
@@ -501,6 +505,55 @@ class BotEngine:
             await self.send_message(
                 channel_id, format_error(f"Failed to interrupt: {e}")
             )
+
+    async def cmd_clear(self, channel_id: str) -> None:
+        """/clear - Destroy the current session and start a new one in the same directory."""
+        session = self.router.resolve(channel_id)
+        if not session:
+            await self.send_message(
+                channel_id, "No active session. Use `/start` first."
+            )
+            return
+
+        machine_id = session.machine_id
+        path = session.path
+        old_name = session.name or session.daemon_session_id
+
+        await self.send_message(
+            channel_id, f"Clearing session **{old_name}** and starting fresh..."
+        )
+
+        # Destroy old session
+        try:
+            local_port = await self.ssh.ensure_tunnel(machine_id)
+            await self.daemon.destroy_session(
+                local_port, session.daemon_session_id
+            )
+        except Exception as e:
+            logger.warning(f"Failed to destroy session during /clear: {e}")
+        self.router.destroy(channel_id)
+
+        # Start a new session in the same location
+        await self.cmd_start(channel_id, [machine_id, path])
+
+    async def cmd_new(self, channel_id: str) -> None:
+        """/new - Start a new session in the same machine and directory as the current one."""
+        session = self.router.resolve(channel_id)
+        if not session:
+            await self.send_message(
+                channel_id,
+                "No active session. Use `/start <machine> <path>` first.",
+            )
+            return
+
+        machine_id = session.machine_id
+        path = session.path
+
+        # Detach from current session (keep it alive)
+        self.router.detach(channel_id)
+
+        # Start a new session in the same location
+        await self.cmd_start(channel_id, [machine_id, path])
 
     async def cmd_rename(self, channel_id: str, args: list[str]) -> None:
         """/rename <new_name> - Rename the current session."""
@@ -1145,6 +1198,8 @@ class BotEngine:
 
 `/start <machine> <remote_path>` - Start a new Claude session
 `/resume <session_id_or_name>` - Resume a previous session
+`/new` - Start a new session in the same directory
+`/clear` - Clear context: destroy + restart in same directory
 `/ls machine` - List all machines
 `/ls session [machine]` - List sessions
 `/exit` - Detach from current session
@@ -1323,9 +1378,14 @@ After `/start` or `/resume`, send any message to interact with Claude."""
                                 if session
                                 else "unknown"
                             )
+                            name_str = (
+                                f" | Session: **{session.name}**"
+                                if session and session.name
+                                else ""
+                            )
                             await self.send_message(
                                 channel_id,
-                                f"Connected to **{model}** | Mode: **{mode_str}**",
+                                f"Connected to **{model}** | Mode: **{mode_str}**{name_str}",
                             )
 
                 elif event_type == "queued":
