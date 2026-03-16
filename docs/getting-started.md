@@ -21,15 +21,20 @@ Before you begin, make sure you have:
 ## Step 1: Clone and Install
 
 ```bash
-git clone https://github.com/your-org/remote-code.git
-cd remote-code
+git clone https://github.com/Chivier/remote-claude.git
+cd remote-claude
 
 # Install Python dependencies
 pip install -r requirements.txt
 
+# Alternatively, install as an editable package (also installs the `remote-code` CLI command)
+# pip install -e .
+
 # Build the daemon (TypeScript → JavaScript)
 cd daemon && npm install && npm run build && cd ..
 ```
+
+> **Note:** `pip install -e .` installs the package in editable (development) mode and registers the `remote-code` CLI command on your PATH, so you can run `remote-code` instead of `python -m head.main`. Both methods install the same Python dependencies.
 
 ---
 

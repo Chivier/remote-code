@@ -6,14 +6,14 @@ A bot-based system that lets you interact with [Claude CLI](https://docs.anthrop
 
 ```
   Discord / Telegram
-        │
-        ▼
+        |
+        v
   Head Node (Python, runs locally)
-        │ SSH tunnel
-        ▼
-  Daemon (Node.js, runs on each remote machine)
-        │ stdin/stdout JSON-lines
-        ▼
+        | SSH tunnel
+        v
+  Daemon (Rust, runs on each remote machine)
+        | stdin/stdout JSON-lines
+        v
   Claude CLI (long-lived subprocess)
 ```
 
@@ -28,14 +28,18 @@ Key properties:
 ## Quick Start
 
 ```bash
-git clone https://github.com/your-org/remote-code.git
-cd remote-code
-pip install -r requirements.txt
-cd daemon && npm install && npm run build && cd ..
+git clone https://github.com/Chivier/remote-claude.git
+cd remote-claude
+pip install -e .              # installs deps + "remote-code" CLI command
 cp config.example.yaml config.yaml
-# Edit config.yaml, then:
-export DISCORD_TOKEN="your-bot-token"
+# Edit config.yaml with your machines and bot token, then:
 python -m head.main
+```
+
+Or install dependencies only:
+
+```bash
+pip install -r requirements.txt
 ```
 
 See [Getting Started](./docs/getting-started.md) for the full walkthrough.
@@ -44,7 +48,8 @@ See [Getting Started](./docs/getting-started.md) for the full walkthrough.
 
 - [Getting Started](./docs/getting-started.md) — installation, prerequisites, first session
 - [Adding a Discord Bot](./docs/adding-a-discord-bot.md) — create a Discord Application step by step
-- [Adding a Server](./docs/adding-a-server.md) — direct SSH, jump hosts, password auth, custom Node.js path
+- [Adding a Telegram Bot](./docs/adding-a-telegram-bot.md) — create a Telegram bot via BotFather
+- [Adding a Server](./docs/adding-a-server.md) — direct SSH, jump hosts, password auth
 - [Commands Reference](./docs/commands-reference.md) — all bot commands with examples
 
 ## Bot Commands
@@ -52,15 +57,23 @@ See [Getting Started](./docs/getting-started.md) for the full walkthrough.
 | Command | Description |
 |---------|-------------|
 | `/start <machine> <path>` | Start a new Claude session |
-| `/resume <session_id>` | Resume a detached session |
+| `/resume <name_or_id>` | Resume a detached session |
+| `/new` | New session in same directory (detaches current) |
+| `/clear` | Clear context: destroy + restart in same directory |
 | `/ls machine` | List configured machines |
 | `/ls session` | List active/detached sessions |
 | `/exit` | Detach (keeps process running) |
 | `/rm <machine> <path>` | Destroy a session |
 | `/mode <auto\|code\|plan\|ask>` | Switch permission mode |
+| `/rename <new_name>` | Rename current session |
+| `/interrupt` | Interrupt Claude's current operation |
 | `/status` | Show current session info |
 | `/health [machine]` | Daemon health check |
 | `/monitor [machine]` | Session and queue details |
+| `/add-machine <name>` | Add machine from SSH config |
+| `/remove-machine <name>` | Remove a machine |
+| `/update` | Git pull + restart (admin) |
+| `/restart` | Restart head node (admin) |
 
 ## Permission Modes
 
@@ -71,10 +84,18 @@ See [Getting Started](./docs/getting-started.md) for the full walkthrough.
 | `plan` | Read-only analysis; no file writes |
 | `ask` | Confirms every action |
 
+## Configuration
+
+Config files are searched in this order:
+1. CLI argument: `python -m head.main /path/to/config.yaml`
+2. `~/.remote-code/config.yaml`
+3. `./config.yaml` (development fallback)
+
+Auto-migration: if `~/.remote-claude/` exists and `~/.remote-code/` does not, it is automatically moved on startup.
+
 ## Requirements
 
 - Python 3.11+ (Head Node)
-- Node.js 18+ and npm (daemon build)
 - SSH access to remote machine(s)
 - Claude CLI installed and authenticated on remote machines
 - Discord bot token and/or Telegram bot token

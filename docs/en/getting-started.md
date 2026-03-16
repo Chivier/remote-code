@@ -41,8 +41,8 @@ This guide walks you through setting up Remote Code from scratch.
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/user/happy-moon.git
-cd happy-moon
+git clone https://github.com/Chivier/remote-claude.git
+cd remote-claude
 ```
 
 ### 2. Install Python Dependencies
@@ -57,6 +57,14 @@ This installs:
 - `aiohttp` -- HTTP client for daemon RPC
 - `discord.py` -- Discord bot framework
 - `python-telegram-bot` -- Telegram bot framework
+
+Alternatively, install the package in editable mode to also get the `remote-code` CLI command:
+
+```bash
+pip install -e .
+```
+
+With `pip install -e .`, you can run `remote-code` directly from your terminal instead of `python -m head.main`. Both approaches install the same dependencies.
 
 ### 3. Build the Daemon (Optional)
 

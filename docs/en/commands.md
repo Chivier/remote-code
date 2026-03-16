@@ -8,14 +8,21 @@ This page documents all commands available in the Discord and Telegram bots.
 |---|---|---|
 | `/start` | `<machine> <path>` | Start a new Claude session |
 | `/resume` | `<session_id>` | Resume a previously detached session |
+| `/new` | *(none)* | Start a new session in same directory (detaches current) |
+| `/clear` | *(none)* | Destroy current session and restart in same directory |
 | `/ls` | `machine` or `session [machine]` | List machines or sessions |
 | `/exit` | *(none)* | Detach from current session |
 | `/rm` | `<machine> <path>` | Destroy a session |
 | `/mode` | `<auto\|code\|plan\|ask>` | Switch permission mode |
+| `/rename` | `<new_name>` | Rename current session (word-word format) |
 | `/status` | *(none)* | Show current session info |
 | `/interrupt` | *(none)* | Interrupt Claude's current operation |
 | `/health` | `[machine]` | Check daemon health |
 | `/monitor` | `[machine]` | Monitor session details & queues |
+| `/add-machine` | `<name> [host] [user] [opts]` | Add a remote machine |
+| `/remove-machine` | `<machine>` | Remove a machine |
+| `/update` | *(none)* | Git pull + restart (admin only) |
+| `/restart` | *(none)* | Restart head node (admin only) |
 | `/help` | *(none)* | Show available commands |
 
 ---
@@ -85,6 +92,47 @@ Resume a previously detached session.
 3. The daemon is notified to resume the session with the stored SDK session ID
 4. The session is re-registered as active on the current channel
 5. Future messages use `--resume` to continue the conversation context
+
+---
+
+## `/new`
+
+Start a new Claude session in the same directory as the current session, automatically detaching the current one.
+
+**Usage:**
+
+```
+/new
+```
+
+**What happens:**
+
+1. The current session is detached (not destroyed)
+2. A new Claude session is created on the same machine and path
+3. The new session is bound to the current channel
+
+Equivalent to `/exit` followed by `/start` with the same machine and path. Useful for getting a clean context without re-entering the connection details.
+
+---
+
+## `/clear`
+
+Destroy the current session and immediately start a fresh one in the same directory.
+
+**Usage:**
+
+```
+/clear
+```
+
+**What happens:**
+
+1. The current session's Claude process is killed
+2. The session record is marked destroyed
+3. A new Claude session is spawned in the same machine and path
+4. The new session is bound to the current channel
+
+Unlike `/new`, the old session is fully destroyed rather than detached.
 
 ---
 
@@ -234,6 +282,32 @@ The display name `bypass` is used for `auto` mode in bot output to make the beha
 
 ---
 
+## `/rename`
+
+Rename the current session.
+
+**Usage:**
+
+```
+/rename <new_name>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|---|---|
+| `new_name` | New name in `word-word` format (e.g. `fast-hawk`, `smooth-dove`) |
+
+**Example:**
+
+```
+/rename fast-hawk
+```
+
+The new name is stored in the session registry and can be used with `/resume` instead of the UUID.
+
+---
+
 ## `/status`
 
 Show the current session's status and queue statistics.
@@ -345,6 +419,98 @@ Monitor - gpu-1 (uptime: 2h15m30s, 2 session(s))
 ```
 
 **Discord features:** Autocomplete for `machine`.
+
+---
+
+## `/add-machine`
+
+Add a new remote machine to the configuration.
+
+**Usage:**
+
+```
+/add-machine <name> [host] [user] [opts]
+/add-machine --from-ssh
+```
+
+**Arguments:**
+
+| Argument | Required | Description |
+|---|---|---|
+| `name` | yes | Short identifier for the machine (used in other commands) |
+| `host` | no | IP address or hostname (can be resolved from SSH config) |
+| `user` | no | SSH username (can be resolved from SSH config) |
+| `opts` | no | Additional SSH options (port, proxy jump, etc.) |
+| `--from-ssh` | — | Browse and import from `~/.ssh/config` interactively |
+
+**Examples:**
+
+```
+/add-machine gpu-3 10.0.1.52 alice
+/add-machine gpu-3 --from-ssh
+```
+
+The machine is persisted to `config.yaml` immediately. The daemon is deployed on first `/start`.
+
+---
+
+## `/remove-machine`
+
+Remove a machine from the configuration.
+
+**Usage:**
+
+```
+/remove-machine <machine_id>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|---|---|
+| `machine_id` | The machine to remove |
+
+**Example:**
+
+```
+/remove-machine gpu-3
+```
+
+If active or detached sessions exist on the machine, the command asks for confirmation. The machine entry is deleted from `config.yaml`.
+
+---
+
+## `/update`
+
+Pull the latest code and restart the Head Node. **Admin only.**
+
+**Usage:**
+
+```
+/update
+```
+
+**What happens:**
+
+1. Runs `git pull --ff-only` in the project directory
+2. Replaces the running process via `os.execv()` (same PID)
+3. Sends a confirmation message after the restart completes
+
+Requires your user ID to be in `admin_users` in the config.
+
+---
+
+## `/restart`
+
+Restart the Head Node without pulling new code. **Admin only.**
+
+**Usage:**
+
+```
+/restart
+```
+
+Replaces the running process via `os.execv()`. Useful for picking up config changes or recovering from a degraded state. Requires your user ID to be in `admin_users` in the config.
 
 ---
 

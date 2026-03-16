@@ -44,6 +44,30 @@ The daemon attempts to resume the Claude CLI process using `--resume <sdk_sessio
 
 ---
 
+### `/new`
+
+Start a new Claude session in the same directory as the current session, automatically detaching the current one first.
+
+```
+/new
+```
+
+Equivalent to running `/exit` followed by `/start` on the same machine and path. Useful when you want a fresh context without manually re-entering the machine and path.
+
+---
+
+### `/clear`
+
+Destroy the current session and immediately start a fresh one in the same directory.
+
+```
+/clear
+```
+
+Unlike `/new`, this also destroys the old session (kills the Claude process) rather than just detaching it. Use this when you want to clear all context and start completely fresh.
+
+---
+
 ### `/exit`
 
 Detach from the current session without destroying it.
@@ -163,6 +187,21 @@ More detailed than `/health` — shows per-session information including:
 
 ## Mode Control
 
+### `/rename <new_name>`
+
+Rename the current session to a new human-friendly name.
+
+```
+/rename fast-hawk
+/rename my-project
+```
+
+- **`new_name`** — must be in `word-word` format (adjective-noun, e.g. `smooth-dove`)
+
+The new name is stored in the session registry and can be used with `/resume`.
+
+---
+
 ### `/mode <auto|code|plan|ask>`
 
 Switch the permission mode for the current Claude session. The daemon restarts the Claude CLI process with the new flags.
@@ -186,6 +225,67 @@ In Discord, the `/mode` slash command shows descriptive labels in the dropdown:
 - `code - Auto accept edits, confirm bash`
 - `plan - Read-only analysis`
 - `ask - Confirm everything`
+
+---
+
+## Machine Management
+
+### `/add-machine <name> [host] [user] [opts]`
+
+Add a new remote machine to the configuration.
+
+```
+/add-machine gpu-3 10.0.1.52 alice
+/add-machine gpu-3 --from-ssh
+```
+
+- **`name`** — a short identifier for the machine (used in other commands)
+- **`host`** — IP address or hostname (optional if resolvable from SSH config)
+- **`user`** — SSH username (optional if set in SSH config)
+- **`opts`** — additional options (e.g. port, proxy jump)
+- **`--from-ssh`** — browse and import entries from `~/.ssh/config` interactively
+
+The machine config is persisted to `config.yaml` immediately. The daemon will be deployed on first `/start`.
+
+---
+
+### `/remove-machine <machine>`
+
+Remove a machine from the configuration.
+
+```
+/remove-machine gpu-3
+```
+
+- **`machine`** — the machine ID to remove
+
+If any active or detached sessions exist on the machine, the command will ask for confirmation before removing. The machine entry is deleted from `config.yaml`.
+
+---
+
+## Admin Commands
+
+### `/update`
+
+Pull the latest code from git and restart the Head Node. Admin only.
+
+```
+/update
+```
+
+Runs `git pull --ff-only` in the project directory, then replaces the running process via `os.execv()`. A confirmation message is sent after the restart completes. Requires your user ID to be in `admin_users` in the config.
+
+---
+
+### `/restart`
+
+Restart the Head Node without pulling new code. Admin only.
+
+```
+/restart
+```
+
+Replaces the running process via `os.execv()`. Useful for picking up config changes or recovering from a degraded state. Requires your user ID to be in `admin_users` in the config.
 
 ---
 
@@ -255,16 +355,17 @@ The bot streams Claude's response back in real time, updating a single message a
               │
               ▼
            active  ◄────── /resume ──────┐
-              │                          │
-           /exit                         │
-              │                          │
-              ▼                          │
-          detached ─────────────────────►┘
-              │
-             /rm
-              │
-              ▼
-          destroyed
+           │    │                        │
+      /exit│    │/new                    │
+           │    │(detach + start new)    │
+           ▼    ▼                        │
+        detached ──────────────────────►┘
+           │
+          /rm
+           │ (also: /clear destroys
+           │  current and starts fresh)
+           ▼
+        destroyed
 ```
 
 - **active** — session is bound to a chat channel; messages are forwarded to Claude

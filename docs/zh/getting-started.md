@@ -23,8 +23,8 @@
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/user/happy-moon.git
-cd happy-moon
+git clone https://github.com/Chivier/remote-claude.git
+cd remote-claude
 ```
 
 ### 2. 安装 Python 依赖
@@ -39,6 +39,14 @@ pip install -r requirements.txt
 - `discord.py` — Discord Bot SDK
 - `python-telegram-bot` — Telegram Bot SDK
 - `PyYAML` — YAML 配置文件解析
+
+也可以使用可编辑模式安装，同时注册 `remote-code` 命令行工具：
+
+```bash
+pip install -e .
+```
+
+安装后可以直接在终端运行 `remote-code` 来启动，而无需使用 `python -m head.main`。两种方式安装的依赖完全相同。
 
 ### 3. 创建配置文件
 
