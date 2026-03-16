@@ -1,6 +1,6 @@
 # Getting Started
 
-This guide walks you through deploying Remote Claude from scratch: setting up the Head Node on your local machine, configuring a Discord or Telegram bot, and connecting your first remote server.
+This guide walks you through deploying Remote Code from scratch: setting up the Head Node on your local machine, configuring a Discord or Telegram bot, and connecting your first remote server.
 
 ## Prerequisites
 
@@ -21,8 +21,8 @@ Before you begin, make sure you have:
 ## Step 1: Clone and Install
 
 ```bash
-git clone https://github.com/your-org/remote-claude.git
-cd remote-claude
+git clone https://github.com/your-org/remote-code.git
+cd remote-code
 
 # Install Python dependencies
 pip install -r requirements.txt
@@ -98,7 +98,7 @@ If this requires a password every time, set up SSH key authentication:
 
 ```bash
 # Generate a key if you don't have one
-ssh-keygen -t ed25519 -C "remote-claude"
+ssh-keygen -t ed25519 -C "remote-code"
 
 # Copy the public key to the remote machine
 ssh-copy-id alice@192.168.1.100
@@ -129,10 +129,10 @@ python -m head.main
 You should see output like:
 
 ```
-2026-03-14 10:00:00 [remote-claude] INFO: Discord bot configured
-2026-03-14 10:00:01 [remote-claude] INFO: Remote Claude started with 1 bot(s)
-2026-03-14 10:00:01 [remote-claude] INFO: Machines: my-server
-2026-03-14 10:00:01 [remote-claude] INFO: Default mode: auto
+2026-03-14 10:00:00 [remote-code] INFO: Discord bot configured
+2026-03-14 10:00:01 [remote-code] INFO: Remote Code started with 1 bot(s)
+2026-03-14 10:00:01 [remote-code] INFO: Machines: my-server
+2026-03-14 10:00:01 [remote-code] INFO: Default mode: auto
 2026-03-14 10:00:02 [discord] INFO: Discord bot logged in as RemoteClaude#1234
 2026-03-14 10:00:02 [discord] INFO: Synced 9 slash command(s)
 ```
@@ -162,7 +162,7 @@ Once connected, just type messages — no command prefix needed. The bot forward
 When `auto_deploy: true` (the default), the Head Node automatically:
 
 1. Builds the daemon locally (`daemon/dist/`)
-2. SCPs it to the remote machine (`~/.remote-claude/daemon/`)
+2. SCPs it to the remote machine (`~/.remote-code/daemon/`)
 3. Runs `npm install --production` on the remote
 4. Starts the daemon with `nohup node dist/server.js`
 5. Waits up to 30 seconds for it to become healthy
@@ -176,17 +176,17 @@ This means the remote machine needs npm available. After the first deploy, the d
 For production use, run the Head Node as a systemd service so it restarts automatically:
 
 ```ini
-# /etc/systemd/system/remote-claude.service
+# /etc/systemd/system/remote-code.service
 [Unit]
-Description=Remote Claude Head Node
+Description=Remote Code Head Node
 After=network.target
 
 [Service]
 Type=simple
 User=alice
-WorkingDirectory=/home/alice/remote-claude
+WorkingDirectory=/home/alice/remote-code
 Environment="DISCORD_TOKEN=your-token-here"
-ExecStart=/home/alice/remote-claude/.venv/bin/python -m head.main
+ExecStart=/home/alice/remote-code/.venv/bin/python -m head.main
 Restart=on-failure
 RestartSec=10
 
@@ -195,9 +195,9 @@ WantedBy=multi-user.target
 ```
 
 ```bash
-sudo systemctl enable remote-claude
-sudo systemctl start remote-claude
-sudo journalctl -u remote-claude -f
+sudo systemctl enable remote-code
+sudo systemctl start remote-code
+sudo journalctl -u remote-code -f
 ```
 
 ---

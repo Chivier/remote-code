@@ -12,7 +12,7 @@ import { join, relative } from "path";
 export class SkillManager {
   private skillsSourceDir: string;
 
-  constructor(skillsSourceDir: string = join(process.env.HOME || "~", ".remote-claude", "skills")) {
+  constructor(skillsSourceDir: string = join(process.env.HOME || "~", ".remote-code", "skills")) {
     this.skillsSourceDir = skillsSourceDir;
   }
 

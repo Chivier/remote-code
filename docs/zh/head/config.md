@@ -75,9 +75,9 @@ class SkillsConfig:
 ```python
 @dataclass
 class DaemonDeployConfig:
-    install_dir: str = "~/.remote-claude/daemon"   # 远程安装目录
+    install_dir: str = "~/.remote-code/daemon"   # 远程安装目录
     auto_deploy: bool = True                       # 自动部署
-    log_file: str = "~/.remote-claude/daemon.log"  # 远程日志文件
+    log_file: str = "~/.remote-code/daemon.log"  # 远程日志文件
 ```
 
 ### Config

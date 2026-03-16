@@ -56,7 +56,7 @@ async fn main() {
     let addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
     let listener = TcpListener::bind(addr).await.unwrap();
 
-    info!("[Daemon] Remote Claude Daemon listening on {}:{}", host, port);
+    info!("[Daemon] Remote Code Daemon listening on {}:{}", host, port);
 
     // Graceful shutdown on SIGTERM/SIGINT
     let state_for_shutdown = state.clone();

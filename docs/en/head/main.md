@@ -2,7 +2,7 @@
 
 **File:** `head/main.py`
 
-The entry point for the Remote Claude Head Node. This module bootstraps the entire system by loading configuration, initializing shared components, starting bots, and handling graceful shutdown.
+The entry point for the Remote Code Head Node. This module bootstraps the entire system by loading configuration, initializing shared components, starting bots, and handling graceful shutdown.
 
 ## Purpose
 
@@ -92,7 +92,7 @@ The config path is read from `sys.argv[1]` if provided, defaulting to `"config.y
 The module configures Python's logging at the `INFO` level with the format:
 
 ```
-2026-03-14 10:00:00 [remote-claude] INFO: message
+2026-03-14 10:00:00 [remote-code] INFO: message
 ```
 
 All modules under `head/` use `logging.getLogger(__name__)` and inherit this configuration.

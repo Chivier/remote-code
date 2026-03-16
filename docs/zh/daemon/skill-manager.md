@@ -12,9 +12,9 @@
 
 ## 设计理念：Skillshare 模型
 
-Remote Claude 使用一种 "技能共享"（Skillshare）模型来管理 Claude 的技能文件：
+Remote Code 使用一种 "技能共享"（Skillshare）模型来管理 Claude 的技能文件：
 
-1. **中央技能目录** — 由 Head Node 通过 SCP 同步到远程机器的 `~/.remote-claude/skills/` 目录
+1. **中央技能目录** — 由 Head Node 通过 SCP 同步到远程机器的 `~/.remote-code/skills/` 目录
 2. **按项目分发** — 创建会话时，技能文件被复制到项目目录
 3. **不覆盖原则** — 如果项目目录已有同名文件，不会被覆盖
 
@@ -25,7 +25,7 @@ Remote Claude 使用一种 "技能共享"（Skillshare）模型来管理 Claude 
 ```typescript
 class SkillManager {
     private skillsSourceDir: string;  // 共享技能目录
-    // 默认: ~/.remote-claude/skills
+    // 默认: ~/.remote-code/skills
 }
 ```
 
@@ -45,13 +45,13 @@ syncToProject(projectPath: string): { synced: string[]; skipped: string[] }
 
 2. **同步 CLAUDE.md**：
    ```
-   ~/.remote-claude/skills/CLAUDE.md → /project/CLAUDE.md
+   ~/.remote-code/skills/CLAUDE.md → /project/CLAUDE.md
    ```
    仅在目标文件不存在时复制。
 
 3. **同步 .claude/skills/ 目录**：
    ```
-   ~/.remote-claude/skills/.claude/skills/* → /project/.claude/skills/*
+   ~/.remote-code/skills/.claude/skills/* → /project/.claude/skills/*
    ```
    递归复制，自动创建目标目录，已存在的文件不覆盖。
 
@@ -99,7 +99,7 @@ listProjectSkills("/home/user/project"): string[]
 共享技能目录的预期结构：
 
 ```
-~/.remote-claude/skills/
+~/.remote-code/skills/
 ├── CLAUDE.md                    # 全局 Claude 指令
 └── .claude/
     └── skills/
@@ -130,14 +130,14 @@ listProjectSkills("/home/user/project"): string[]
 本地 ./skills/ 目录
     │
     ▼ (Head Node: ssh_manager.sync_skills via SCP)
-远程 ~/.remote-claude/skills/
+远程 ~/.remote-code/skills/
     │
     ▼ (Daemon: skill_manager.syncToProject via fs.copyFile)
 远程 /project/.claude/skills/
 ```
 
-1. Head Node 使用 SCP 将本地 `skills/` 目录同步到远程的 `~/.remote-claude/skills/`
-2. Daemon 在创建会话时将 `~/.remote-claude/skills/` 中的文件复制到项目目录
+1. Head Node 使用 SCP 将本地 `skills/` 目录同步到远程的 `~/.remote-code/skills/`
+2. Daemon 在创建会话时将 `~/.remote-code/skills/` 中的文件复制到项目目录
 
 这两步使用相同的 "不覆盖" 策略。
 

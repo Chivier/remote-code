@@ -22,7 +22,7 @@ impl SkillManager {
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
         Self {
-            skills_source_dir: home.join(".remote-claude").join("skills"),
+            skills_source_dir: home.join(".remote-code").join("skills"),
         }
     }
 

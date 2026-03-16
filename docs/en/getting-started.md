@@ -1,6 +1,6 @@
 # Getting Started
 
-This guide walks you through setting up Remote Claude from scratch.
+This guide walks you through setting up Remote Code from scratch.
 
 ## Prerequisites
 
@@ -138,11 +138,11 @@ python -m head.main /path/to/config.yaml
 You should see output like:
 
 ```
-2026-03-14 10:00:00 [remote-claude] INFO: Discord bot configured
-2026-03-14 10:00:00 [remote-claude] INFO: Telegram bot configured
-2026-03-14 10:00:00 [remote-claude] INFO: Remote Claude started with 2 bot(s)
-2026-03-14 10:00:00 [remote-claude] INFO: Machines: gpu-1
-2026-03-14 10:00:00 [remote-claude] INFO: Default mode: auto
+2026-03-14 10:00:00 [remote-code] INFO: Discord bot configured
+2026-03-14 10:00:00 [remote-code] INFO: Telegram bot configured
+2026-03-14 10:00:00 [remote-code] INFO: Remote Code started with 2 bot(s)
+2026-03-14 10:00:00 [remote-code] INFO: Machines: gpu-1
+2026-03-14 10:00:00 [remote-code] INFO: Default mode: auto
 ```
 
 ## First Session

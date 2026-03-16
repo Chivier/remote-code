@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Remote Claude uses a two-tier architecture consisting of a **Head Node** (local orchestrator) and one or more **Daemons** (remote agents). This design separates the concerns of user interaction, connection management, and Claude CLI execution.
+Remote Code uses a two-tier architecture consisting of a **Head Node** (local orchestrator) and one or more **Daemons** (remote agents). This design separates the concerns of user interaction, connection management, and Claude CLI execution.
 
 ## System Diagram
 
@@ -80,7 +80,7 @@ A typical user interaction follows this path:
 
 ### Per-Message Spawn (`claude --print`)
 
-Rather than maintaining a long-running Claude CLI process with stdin/stdout, Remote Claude spawns a fresh process for each user message:
+Rather than maintaining a long-running Claude CLI process with stdin/stdout, Remote Code spawns a fresh process for each user message:
 
 ```
 claude --print "user message" --output-format stream-json --verbose \

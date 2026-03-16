@@ -1141,7 +1141,7 @@ class BotEngine:
 
     async def cmd_help(self, channel_id: str) -> None:
         """/help - Show available commands."""
-        help_text = """**Remote Claude Commands:**
+        help_text = """**Remote Code Commands:**
 
 `/start <machine> <remote_path>` - Start a new Claude session
 `/resume <session_id_or_name>` - Resume a previous session

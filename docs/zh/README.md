@@ -1,12 +1,12 @@
-# Remote Claude
+# Remote Code
 
-Remote Claude 是一个分布式系统，用于通过 Discord 和 Telegram 聊天机器人远程控制部署在远程服务器（如 GPU 服务器）上的 Claude CLI。
+Remote Code 是一个分布式系统，用于通过 Discord 和 Telegram 聊天机器人远程控制部署在远程服务器（如 GPU 服务器）上的 Claude CLI。
 
 ## 项目概述
 
 在日常开发中，我们经常需要在远程 GPU 服务器上使用 Claude CLI 进行代码编写、调试和分析。但直接 SSH 到远程机器使用 CLI 存在诸多不便：终端会话易断、多机器切换繁琐、无法在移动设备上操作等。
 
-Remote Claude 解决了这些问题。它在本地运行一个 Head Node（控制节点），通过 SSH 隧道连接到远程机器上的 Daemon（守护进程），并将 Discord/Telegram 消息转发给 Claude CLI，再将 Claude 的流式响应实时推送回聊天窗口。
+Remote Code 解决了这些问题。它在本地运行一个 Head Node（控制节点），通过 SSH 隧道连接到远程机器上的 Daemon（守护进程），并将 Discord/Telegram 消息转发给 Claude CLI，再将 Claude 的流式响应实时推送回聊天窗口。
 
 ## 核心特性
 
@@ -58,7 +58,7 @@ happy-moon/
 ## 快速链接
 
 - [架构概览](./architecture.md) — 了解系统的整体设计
-- [快速开始](./getting-started.md) — 开始使用 Remote Claude
+- [快速开始](./getting-started.md) — 开始使用 Remote Code
 - [配置指南](./configuration.md) — 详细的配置说明
 - [Bot 命令参考](./commands.md) — 所有可用的聊天命令
 - [API 参考](./api/rpc-protocol.md) — JSON-RPC 协议文档

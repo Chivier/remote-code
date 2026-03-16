@@ -1,4 +1,4 @@
-# Remote Claude - Head Node Dependencies
+# Remote Code - Head Node Dependencies
 
 # Config
 pyyaml>=6.0

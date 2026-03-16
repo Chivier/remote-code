@@ -1,6 +1,6 @@
 # 架构概览
 
-Remote Claude 采用两层架构设计：**Head Node**（本地控制节点）和 **Daemon**（远程守护进程），通过 SSH 隧道安全通信。
+Remote Code 采用两层架构设计：**Head Node**（本地控制节点）和 **Daemon**（远程守护进程），通过 SSH 隧道安全通信。
 
 ## 系统架构图
 

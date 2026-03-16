@@ -1,6 +1,6 @@
 # 主入口 (main.py)
 
-`main.py` 是 Remote Claude Head Node 的入口点，负责加载配置、初始化所有核心组件、启动 Bot 并处理优雅关闭。
+`main.py` 是 Remote Code Head Node 的入口点，负责加载配置、初始化所有核心组件、启动 Bot 并处理优雅关闭。
 
 **源文件**：`head/main.py`
 
@@ -122,7 +122,7 @@ python -m head.main /path/to/my-config.yaml
 ```
 
 日志级别默认为 `INFO`。各模块的 logger 名称：
-- `remote-claude` — 主入口
+- `remote-code` — 主入口
 - `head.ssh_manager` — SSH 管理
 - `head.session_router` — 会话路由
 - `head.daemon_client` — Daemon 客户端

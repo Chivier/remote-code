@@ -1,5 +1,5 @@
 """
-Shared fixtures for Remote Claude tests.
+Shared fixtures for Remote Code tests.
 """
 
 import pytest

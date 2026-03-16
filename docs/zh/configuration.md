@@ -1,6 +1,6 @@
 # 配置指南
 
-Remote Claude 使用 YAML 配置文件来定义远程机器、Bot 设置和系统行为。默认读取项目根目录下的 `config.yaml`。
+Remote Code 使用 YAML 配置文件来定义远程机器、Bot 设置和系统行为。默认读取项目根目录下的 `config.yaml`。
 
 ## 配置文件示例
 
@@ -42,9 +42,9 @@ skills:
   sync_on_start: true
 
 daemon:
-  install_dir: ~/.remote-claude/daemon
+  install_dir: ~/.remote-code/daemon
   auto_deploy: true
-  log_file: ~/.remote-claude/daemon.log
+  log_file: ~/.remote-code/daemon.log
 ```
 
 ## 环境变量展开
@@ -186,9 +186,9 @@ Daemon 部署配置。
 
 | 字段 | 类型 | 默认值 | 必填 | 说明 |
 |------|------|--------|------|------|
-| `install_dir` | string | `~/.remote-claude/daemon` | 否 | Daemon 在远程机器上的安装目录 |
+| `install_dir` | string | `~/.remote-code/daemon` | 否 | Daemon 在远程机器上的安装目录 |
 | `auto_deploy` | bool | `true` | 否 | 是否自动部署 Daemon 到远程机器 |
-| `log_file` | string | `~/.remote-claude/daemon.log` | 否 | Daemon 日志文件路径（在远程机器上） |
+| `log_file` | string | `~/.remote-code/daemon.log` | 否 | Daemon 日志文件路径（在远程机器上） |
 
 当 `auto_deploy` 为 `true` 时，如果远程机器上没有 Daemon 代码（`dist/server.js` 不存在或 `node_modules` 目录缺失），系统会自动：
 
@@ -236,9 +236,9 @@ class SkillsConfig:
 
 @dataclass
 class DaemonDeployConfig:
-    install_dir: str = "~/.remote-claude/daemon"
+    install_dir: str = "~/.remote-code/daemon"
     auto_deploy: bool = True
-    log_file: str = "~/.remote-claude/daemon.log"
+    log_file: str = "~/.remote-code/daemon.log"
 
 @dataclass
 class Config:

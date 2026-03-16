@@ -1,6 +1,6 @@
 # Adding a Server
 
-This guide covers how to add a remote machine to Remote Claude's `config.yaml`. Four scenarios are covered:
+This guide covers how to add a remote machine to Remote Code's `config.yaml`. Four scenarios are covered:
 
 1. [Direct SSH connection](#scenario-1-direct-ssh-connection) — standard setup
 2. [Jump host / Bastion](#scenario-2-jump-host--bastion-server) — target behind a gateway
@@ -65,7 +65,7 @@ If this asks for a passphrase, either add the key to your SSH agent (`ssh-add ~/
 
 Use this when the target machine is only reachable through a gateway (bastion) host.
 
-Remote Claude implements proxy-jump natively using asyncssh — it does not depend on your local `~/.ssh/config`.
+Remote Code implements proxy-jump natively using asyncssh — it does not depend on your local `~/.ssh/config`.
 
 **Step 1:** Add the jump host as its own machine entry:
 
@@ -121,7 +121,7 @@ machines:
       - /home/alice/training-runs
 ```
 
-> **Note:** Remote Claude treats machines that appear only as `proxy_jump` targets (and have no `default_paths`) as pure jump hosts — they are hidden from the `/ls machine` and `/start` autocomplete output.
+> **Note:** Remote Code treats machines that appear only as `proxy_jump` targets (and have no `default_paths`) as pure jump hosts — they are hidden from the `/ls machine` and `/start` autocomplete output.
 
 ---
 
@@ -145,8 +145,8 @@ Store the password in a file readable only by you, then reference it with the `f
 
 ```bash
 # Create the password file
-echo "my-ssh-password" > ~/.ssh/remote-claude-pw
-chmod 600 ~/.ssh/remote-claude-pw
+echo "my-ssh-password" > ~/.ssh/remote-code-pw
+chmod 600 ~/.ssh/remote-code-pw
 ```
 
 ```yaml
@@ -154,7 +154,7 @@ machines:
   legacy-server:
     host: 10.0.2.99
     user: bob
-    password: "file:~/.ssh/remote-claude-pw"
+    password: "file:~/.ssh/remote-code-pw"
 ```
 
 The `~` in the file path is expanded automatically.
@@ -165,7 +165,7 @@ The `~` in the file path is expanded automatically.
 
 ## Scenario 4: Custom Node.js Path
 
-By default, Remote Claude calls `node` on the remote machine. If Node.js is installed in a non-standard location (e.g. via `nvm`, `fnm`, or a custom prefix), specify the full path with `node_path:`.
+By default, Remote Code calls `node` on the remote machine. If Node.js is installed in a non-standard location (e.g. via `nvm`, `fnm`, or a custom prefix), specify the full path with `node_path:`.
 
 ```yaml
 machines:
@@ -178,7 +178,7 @@ machines:
       - /home/carol/webapp
 ```
 
-When `node_path` is set, Remote Claude:
+When `node_path` is set, Remote Code:
 - Uses that binary to start the daemon (`nohup /path/to/node dist/server.js`)
 - Adds the node binary's parent directory to `PATH` when spawning the daemon, so `npm` and other node tools work correctly
 - Adds `~/.local/bin` to `PATH` so the Claude CLI (typically installed there) is also available
@@ -220,7 +220,7 @@ Ctrl+C
 python -m head.main
 
 # If running as a systemd service
-sudo systemctl restart remote-claude
+sudo systemctl restart remote-code
 ```
 
 Verify the machine is reachable:

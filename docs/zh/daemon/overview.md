@@ -1,6 +1,6 @@
 # Daemon 概览
 
-Daemon 是 Remote Claude 系统的远程代理端，运行在远程 GPU 服务器上，使用 TypeScript/Node.js 编写。它管理 Claude CLI 进程的生命周期，提供 JSON-RPC 接口供 Head Node 调用。
+Daemon 是 Remote Code 系统的远程代理端，运行在远程 GPU 服务器上，使用 TypeScript/Node.js 编写。它管理 Claude CLI 进程的生命周期，提供 JSON-RPC 接口供 Head Node 调用。
 
 ## 模块架构
 

@@ -1,4 +1,4 @@
-# Remote Claude
+# Remote Code
 
 A bot-based system that lets you interact with [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) on remote machines through Discord and Telegram.
 
@@ -28,8 +28,8 @@ Key properties:
 ## Quick Start
 
 ```bash
-git clone https://github.com/your-org/remote-claude.git
-cd remote-claude
+git clone https://github.com/your-org/remote-code.git
+cd remote-code
 pip install -r requirements.txt
 cd daemon && npm install && npm run build && cd ..
 cp config.example.yaml config.yaml

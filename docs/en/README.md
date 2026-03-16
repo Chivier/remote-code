@@ -1,10 +1,10 @@
-# Remote Claude
+# Remote Code
 
-Remote Claude is a distributed system for controlling [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) on remote machines through chat bots (Discord and Telegram). It enables you to interact with Claude on GPU servers, cloud VMs, or any SSH-accessible machine directly from your phone or desktop chat client.
+Remote Code is a distributed system for controlling [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) on remote machines through chat bots (Discord and Telegram). It enables you to interact with Claude on GPU servers, cloud VMs, or any SSH-accessible machine directly from your phone or desktop chat client.
 
-## Why Remote Claude?
+## Why Remote Code?
 
-When working with remote development servers -- GPU nodes behind firewalls, lab machines accessible only via jump hosts, cloud instances without a GUI -- you often need to run Claude CLI in those environments. Remote Claude bridges the gap by letting you start, manage, and interact with Claude sessions on those machines through familiar chat interfaces.
+When working with remote development servers -- GPU nodes behind firewalls, lab machines accessible only via jump hosts, cloud instances without a GUI -- you often need to run Claude CLI in those environments. Remote Code bridges the gap by letting you start, manage, and interact with Claude sessions on those machines through familiar chat interfaces.
 
 ## Key Features
 
@@ -53,7 +53,7 @@ happy-moon/
 ## Quick Links
 
 - [Architecture Overview](./architecture.md) -- Understand the two-tier design
-- [Getting Started](./getting-started.md) -- Install and run Remote Claude
+- [Getting Started](./getting-started.md) -- Install and run Remote Code
 - [Configuration Guide](./configuration.md) -- All config.yaml options
 - [Bot Command Reference](./commands.md) -- Every chat command explained
 - [JSON-RPC Protocol](./api/rpc-protocol.md) -- Daemon API reference

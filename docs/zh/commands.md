@@ -1,6 +1,6 @@
 # Bot 命令参考
 
-Remote Claude 在 Discord 和 Telegram 中提供一致的命令接口。Discord 支持斜杠命令（带自动补全），Telegram 使用标准命令语法。
+Remote Code 在 Discord 和 Telegram 中提供一致的命令接口。Discord 支持斜杠命令（带自动补全），Telegram 使用标准命令语法。
 
 ## 命令一览
 

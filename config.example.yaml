@@ -1,4 +1,4 @@
-# Remote Claude Configuration
+# Remote Code Configuration
 # Copy this file to config.yaml and edit as needed.
 
 machines:
@@ -61,15 +61,15 @@ skills:
   sync_on_start: true           # Sync skills when /start creates a session
 
 daemon:
-  install_dir: ~/.remote-claude/daemon  # Where daemon code lives on remote
+  install_dir: ~/.remote-code/daemon  # Where daemon code lives on remote
   auto_deploy: true                     # Auto-deploy daemon code to remotes
-  log_file: ~/.remote-claude/daemon.log # Daemon log file on remote
+  log_file: ~/.remote-code/daemon.log # Daemon log file on remote
 
 # File transfer settings (Discord attachments -> remote machines)
 file_pool:
   max_size: 1073741824              # Max pool size in bytes (default: 1GB)
-  pool_dir: ~/.remote-claude/file-pool  # Local file cache directory
-  remote_dir: /tmp/remote-claude/files  # Remote file staging directory
+  pool_dir: ~/.remote-code/file-pool  # Local file cache directory
+  remote_dir: /tmp/remote-code/files  # Remote file staging directory
   allowed_types:                    # MIME type patterns for allowed files
     - text/plain
     - text/markdown

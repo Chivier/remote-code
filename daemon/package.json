@@ -1,5 +1,5 @@
 {
-  "name": "remote-claude-daemon",
+  "name": "remote-code-daemon",
   "version": "0.1.0",
   "description": "Remote Agent Daemon - manages Claude CLI instances on remote machines",
   "main": "dist/server.js",

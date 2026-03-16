@@ -1022,7 +1022,7 @@ class DiscordAdapter:
                     await self.send_message(channel_id, format_error(str(e)))
 
         # ------------------------------------------------------------------ /help
-        @tree.command(name="help", description="Show available Remote Claude commands")
+        @tree.command(name="help", description="Show available Remote Code commands")
         async def slash_help(interaction: discord.Interaction) -> None:
             await interaction.response.defer()
             channel_id = self._defer_and_register(interaction)

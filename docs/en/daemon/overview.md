@@ -1,6 +1,6 @@
 # Daemon Overview
 
-The Daemon is the remote agent component of Remote Claude. It runs on each remote machine (GPU server, cloud VM, etc.) and provides a JSON-RPC interface for managing Claude CLI sessions.
+The Daemon is the remote agent component of Remote Code. It runs on each remote machine (GPU server, cloud VM, etc.) and provides a JSON-RPC interface for managing Claude CLI sessions.
 
 ## Technology Stack
 
@@ -78,4 +78,4 @@ app.listen(PORT, HOST, () => { ... });
 | Variable | Default | Description |
 |---|---|---|
 | `DAEMON_PORT` | `9100` | Port to listen on |
-| `HOME` | System default | Used to locate the skills source directory (`~/.remote-claude/skills`) |
+| `HOME` | System default | Used to locate the skills source directory (`~/.remote-code/skills`) |

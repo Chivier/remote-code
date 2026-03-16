@@ -6,7 +6,7 @@ Discord bot implementation using discord.py v2 with slash commands, autocomplete
 
 ## Purpose
 
-- Implement the Discord-specific platform layer for Remote Claude
+- Implement the Discord-specific platform layer for Remote Code
 - Register slash commands with Discord's application command system
 - Provide autocomplete for machine IDs and project paths
 - Show typing indicators during Claude processing

@@ -350,6 +350,6 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 // ─── Start Server ───
 
 app.listen(PORT, HOST, () => {
-  console.log(`[Daemon] Remote Claude Daemon listening on ${HOST}:${PORT}`);
+  console.log(`[Daemon] Remote Code Daemon listening on ${HOST}:${PORT}`);
   console.log(`[Daemon] Skills source: ${skillManager["skillsSourceDir"]}`);
 });

@@ -22,7 +22,7 @@ def mock_config():
         "gpu-1": MachineConfig(id="gpu-1", host="10.0.0.1", user="user"),
     }
     config.file_pool = FilePoolConfig(
-        remote_dir="/tmp/remote-claude/files"
+        remote_dir="/tmp/remote-code/files"
     )
     return config
 
@@ -71,10 +71,10 @@ class TestUploadFiles:
             result = await ssh_manager.upload_files("gpu-1", [mock_file_entry])
 
         assert "sess1234_abcd5678" in result
-        assert result["sess1234_abcd5678"] == "/tmp/remote-claude/files/sess1234_abcd5678_report.pdf"
+        assert result["sess1234_abcd5678"] == "/tmp/remote-code/files/sess1234_abcd5678_report.pdf"
 
         # Should have created the remote directory
-        mock_tunnel.conn.run.assert_called_once_with("mkdir -p /tmp/remote-claude/files")
+        mock_tunnel.conn.run.assert_called_once_with("mkdir -p /tmp/remote-code/files")
 
     @pytest.mark.asyncio
     async def test_upload_multiple_files(self, ssh_manager, mock_tunnel, tmp_path):
@@ -98,8 +98,8 @@ class TestUploadFiles:
             result = await ssh_manager.upload_files("gpu-1", entries)
 
         assert len(result) == 2
-        assert result["id_0"] == "/tmp/remote-claude/files/id_0_doc1.pdf"
-        assert result["id_1"] == "/tmp/remote-claude/files/id_1_img.png"
+        assert result["id_0"] == "/tmp/remote-code/files/id_0_doc1.pdf"
+        assert result["id_1"] == "/tmp/remote-code/files/id_1_img.png"
 
     @pytest.mark.asyncio
     async def test_upload_custom_remote_base(self, ssh_manager, mock_tunnel, mock_file_entry):
@@ -152,5 +152,5 @@ class TestUploadFiles:
 
             mock_asyncssh.scp.assert_called_once_with(
                 str(mock_file_entry.local_path),
-                (mock_tunnel.conn, "/tmp/remote-claude/files/sess1234_abcd5678_report.pdf"),
+                (mock_tunnel.conn, "/tmp/remote-code/files/sess1234_abcd5678_report.pdf"),
             )

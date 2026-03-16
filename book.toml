@@ -1,7 +1,7 @@
 [book]
-title = "Remote Claude"
-description = "Remote Claude CLI control via Discord/Telegram bots"
-authors = ["Remote Claude Contributors"]
+title = "Remote Code"
+description = "Remote Code CLI control via Discord/Telegram bots"
+authors = ["Remote Code Contributors"]
 language = "en"
 src = "docs/en"
 

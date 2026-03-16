@@ -415,7 +415,7 @@ class TestHandleInput:
     async def test_command_routing_help(self, bot):
         await bot.handle_input("discord:100", "/help")
         msg = bot.get_last_message()
-        assert "Remote Claude Commands" in msg
+        assert "Remote Code Commands" in msg
 
     @pytest.mark.asyncio
     async def test_command_routing_status(self, bot):
@@ -469,7 +469,7 @@ class TestHandleInput:
     async def test_command_case_insensitive(self, bot):
         await bot.handle_input("discord:100", "/HELP")
         msg = bot.get_last_message()
-        assert "Remote Claude Commands" in msg
+        assert "Remote Code Commands" in msg
 
     @pytest.mark.asyncio
     async def test_command_routing_mode(self, bot):

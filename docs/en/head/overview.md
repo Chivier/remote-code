@@ -1,6 +1,6 @@
 # Head Node Overview
 
-The Head Node is the local orchestrator component of Remote Claude. It runs on your local machine (or a control server) and manages all user-facing interactions, SSH connections, session state, and communication with remote daemons.
+The Head Node is the local orchestrator component of Remote Code. It runs on your local machine (or a control server) and manages all user-facing interactions, SSH connections, session state, and communication with remote daemons.
 
 ## Technology Stack
 

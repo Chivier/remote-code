@@ -1,5 +1,5 @@
 """
-Configuration loader for Remote Claude Head Node.
+Configuration loader for Remote Code Head Node.
 Reads config.yaml and expands environment variables.
 """
 
@@ -62,9 +62,9 @@ class SkillsConfig:
 
 @dataclass
 class DaemonDeployConfig:
-    install_dir: str = "~/.remote-claude/daemon"
+    install_dir: str = "~/.remote-code/daemon"
     auto_deploy: bool = True
-    log_file: str = "~/.remote-claude/daemon.log"
+    log_file: str = "~/.remote-code/daemon.log"
 
 
 DEFAULT_ALLOWED_FILE_TYPES = [
@@ -80,8 +80,8 @@ DEFAULT_ALLOWED_FILE_TYPES = [
 @dataclass
 class FilePoolConfig:
     max_size: int = 1073741824  # 1GB in bytes
-    pool_dir: str = "~/.remote-claude/file-pool"
-    remote_dir: str = "/tmp/remote-claude/files"
+    pool_dir: str = "~/.remote-code/file-pool"
+    remote_dir: str = "/tmp/remote-code/files"
     allowed_types: list[str] = field(default_factory=lambda: list(DEFAULT_ALLOWED_FILE_TYPES))
 
 
@@ -233,17 +233,17 @@ def load_config(config_path: str = "config.yaml") -> Config:
     daemon_raw: dict[str, Any] = raw.get("daemon", {})
     if daemon_raw:
         config.daemon = DaemonDeployConfig(
-            install_dir=daemon_raw.get("install_dir", "~/.remote-claude/daemon"),
+            install_dir=daemon_raw.get("install_dir", "~/.remote-code/daemon"),
             auto_deploy=daemon_raw.get("auto_deploy", True),
-            log_file=daemon_raw.get("log_file", "~/.remote-claude/daemon.log"),
+            log_file=daemon_raw.get("log_file", "~/.remote-code/daemon.log"),
         )
 
     file_pool_raw: dict[str, Any] = raw.get("file_pool", {})
     if file_pool_raw:
         config.file_pool = FilePoolConfig(
             max_size=file_pool_raw.get("max_size", 1073741824),
-            pool_dir=expand_env_vars(file_pool_raw.get("pool_dir", "~/.remote-claude/file-pool")),
-            remote_dir=file_pool_raw.get("remote_dir", "/tmp/remote-claude/files"),
+            pool_dir=expand_env_vars(file_pool_raw.get("pool_dir", "~/.remote-code/file-pool")),
+            remote_dir=file_pool_raw.get("remote_dir", "/tmp/remote-code/files"),
             allowed_types=file_pool_raw.get("allowed_types", list(DEFAULT_ALLOWED_FILE_TYPES)),
         )
 

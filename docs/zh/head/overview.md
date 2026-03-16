@@ -1,6 +1,6 @@
 # Head Node 概览
 
-Head Node 是 Remote Claude 系统的本地控制端，使用 Python 编写，负责编排所有组件：管理 SSH 连接、路由会话、与远程 Daemon 通信以及运行聊天 Bot。
+Head Node 是 Remote Code 系统的本地控制端，使用 Python 编写，负责编排所有组件：管理 SSH 连接、路由会话、与远程 Daemon 通信以及运行聊天 Bot。
 
 ## 模块架构
 

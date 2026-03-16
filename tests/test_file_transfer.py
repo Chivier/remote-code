@@ -127,7 +127,7 @@ def mock_config():
     config.machines = {
         "gpu-1": MachineConfig(id="gpu-1", host="10.0.0.1", user="user"),
     }
-    config.file_pool = FilePoolConfig(remote_dir="/tmp/remote-claude/files")
+    config.file_pool = FilePoolConfig(remote_dir="/tmp/remote-code/files")
     return config
 
 
@@ -185,13 +185,13 @@ class TestUploadAndReplaceFiles:
     @pytest.mark.asyncio
     async def test_single_file_replacement(self, bot, mock_ssh, file_entry):
         mock_ssh.upload_files = AsyncMock(return_value={
-            "sess1234_abcd5678": "/tmp/remote-claude/files/sess1234_abcd5678_report.pdf"
+            "sess1234_abcd5678": "/tmp/remote-code/files/sess1234_abcd5678_report.pdf"
         })
 
         text = "Analyze this <discord_file>sess1234_abcd5678</discord_file>"
         result = await bot._upload_and_replace_files("gpu-1", text, [file_entry])
 
-        assert result == "Analyze this /tmp/remote-claude/files/sess1234_abcd5678_report.pdf"
+        assert result == "Analyze this /tmp/remote-code/files/sess1234_abcd5678_report.pdf"
         mock_ssh.upload_files.assert_called_once_with("gpu-1", [file_entry])
 
     @pytest.mark.asyncio

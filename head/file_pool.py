@@ -117,7 +117,7 @@ class FilePool:
             allowed_types: List of MIME type patterns (supports wildcards like "image/*").
         """
         self.max_size = max_size
-        self.pool_dir = pool_dir or Path.home() / ".remote-claude" / "file-pool"
+        self.pool_dir = pool_dir or Path.home() / ".remote-code" / "file-pool"
         self.allowed_types = allowed_types or [
             "text/plain",
             "text/markdown",

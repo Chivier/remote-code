@@ -75,9 +75,9 @@ class SkillsConfig:
 ```python
 @dataclass
 class DaemonDeployConfig:
-    install_dir: str = "~/.remote-claude/daemon"   # Remote install path
+    install_dir: str = "~/.remote-code/daemon"   # Remote install path
     auto_deploy: bool = True                        # Auto-deploy daemon
-    log_file: str = "~/.remote-claude/daemon.log"  # Remote log file
+    log_file: str = "~/.remote-code/daemon.log"  # Remote log file
 ```
 
 ### Config

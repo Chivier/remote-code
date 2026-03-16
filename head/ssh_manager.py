@@ -74,7 +74,7 @@ class SSHManager:
         self.tunnels: dict[str, SSHTunnel] = {}
         self._next_port = 19100  # Starting port for local tunnel endpoints
         self._daemon_source = Path(__file__).parent.parent / "daemon"
-        self._rust_binary = Path(__file__).parent.parent / "target" / "release" / "remote-claude-daemon"
+        self._rust_binary = Path(__file__).parent.parent / "target" / "release" / "remote-code-daemon"
 
     def _alloc_port(self) -> int:
         """Allocate a local port for SSH tunnel."""
@@ -198,7 +198,7 @@ class SSHManager:
         install_dir = self.config.daemon.install_dir
 
         # Check if daemon is already running
-        result = await conn.run(f"pgrep -f 'remote-claude-daemon' || true")
+        result = await conn.run(f"pgrep -f 'remote-code-daemon' || true")
         stdout = result.stdout.strip() if result.stdout else ""
 
         if stdout:
@@ -208,7 +208,7 @@ class SSHManager:
         logger.info(f"Daemon not running on {machine_id}, starting...")
 
         # Check if daemon binary exists on remote
-        binary_path = f"{install_dir}/remote-claude-daemon"
+        binary_path = f"{install_dir}/remote-code-daemon"
         check_result = await conn.run(
             f"test -x {binary_path} && echo 'exists' || echo 'missing'"
         )
@@ -262,7 +262,7 @@ class SSHManager:
         # Check if daemon is already running
         try:
             result = subprocess.run(
-                ["pgrep", "-f", "remote-claude-daemon"],
+                ["pgrep", "-f", "remote-code-daemon"],
                 capture_output=True, text=True
             )
             if result.stdout.strip():
@@ -274,7 +274,7 @@ class SSHManager:
         logger.info(f"Local daemon not running, starting on port {machine.daemon_port}...")
 
         # Check if daemon binary exists
-        binary_path = install_dir / "remote-claude-daemon"
+        binary_path = install_dir / "remote-code-daemon"
         if not binary_path.exists():
             if self.config.daemon.auto_deploy:
                 await self._deploy_daemon_local(machine, install_dir)
@@ -343,7 +343,7 @@ class SSHManager:
 
         # Create install directory and copy binary
         install_dir.mkdir(parents=True, exist_ok=True)
-        dest_binary = install_dir / "remote-claude-daemon"
+        dest_binary = install_dir / "remote-code-daemon"
         shutil.copy2(str(self._rust_binary), str(dest_binary))
         dest_binary.chmod(0o755)
 
@@ -371,7 +371,7 @@ class SSHManager:
         await conn.run(f"mkdir -p {install_dir}")
 
         # SCP binary to remote
-        remote_binary = f"{install_dir}/remote-claude-daemon"
+        remote_binary = f"{install_dir}/remote-code-daemon"
         await asyncssh.scp(str(self._rust_binary), (conn, remote_binary))
         await conn.run(f"chmod +x {remote_binary}")
 
@@ -459,7 +459,7 @@ class SSHManager:
                 status = "online"
                 try:
                     result = subprocess.run(
-                        ["pgrep", "-f", "remote-claude-daemon"],
+                        ["pgrep", "-f", "remote-code-daemon"],
                         capture_output=True, text=True,
                     )
                     daemon_status = "running" if result.stdout.strip() else "stopped"
@@ -474,7 +474,7 @@ class SSHManager:
                     status = "online"
                     # Check if daemon is running
                     daemon_check = await conn.run(
-                        f"pgrep -f 'remote-claude-daemon' > /dev/null 2>&1 && echo 'running' || echo 'stopped'"
+                        f"pgrep -f 'remote-code-daemon' > /dev/null 2>&1 && echo 'running' || echo 'stopped'"
                     )
                     daemon_status = (daemon_check.stdout or "").strip()
                     conn.close()

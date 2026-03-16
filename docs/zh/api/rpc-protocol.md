@@ -1,6 +1,6 @@
 # JSON-RPC 协议
 
-Remote Claude 使用 JSON-RPC over HTTP 协议进行 Head Node 和 Daemon 之间的通信。所有请求发送到 `POST /rpc` 端点。
+Remote Code 使用 JSON-RPC over HTTP 协议进行 Head Node 和 Daemon 之间的通信。所有请求发送到 `POST /rpc` 端点。
 
 ## 协议格式
 

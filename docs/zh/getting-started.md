@@ -1,6 +1,6 @@
 # 快速开始
 
-本指南将帮助你从零开始部署和运行 Remote Claude。
+本指南将帮助你从零开始部署和运行 Remote Code。
 
 ## 前提条件
 
@@ -127,11 +127,11 @@ python -m head.main /path/to/config.yaml
 启动后你会看到类似以下日志：
 
 ```
-2026-03-14 10:00:00 [remote-claude] INFO: Discord bot configured
-2026-03-14 10:00:00 [remote-claude] INFO: Telegram bot configured
-2026-03-14 10:00:00 [remote-claude] INFO: Remote Claude started with 2 bot(s)
-2026-03-14 10:00:00 [remote-claude] INFO: Machines: my-gpu
-2026-03-14 10:00:00 [remote-claude] INFO: Default mode: auto
+2026-03-14 10:00:00 [remote-code] INFO: Discord bot configured
+2026-03-14 10:00:00 [remote-code] INFO: Telegram bot configured
+2026-03-14 10:00:00 [remote-code] INFO: Remote Code started with 2 bot(s)
+2026-03-14 10:00:00 [remote-code] INFO: Machines: my-gpu
+2026-03-14 10:00:00 [remote-code] INFO: Default mode: auto
 2026-03-14 10:00:01 [head.bot_discord] INFO: Discord bot logged in as RemoteClaude#1234
 2026-03-14 10:00:01 [head.bot_discord] INFO: Synced 12 slash command(s)
 2026-03-14 10:00:01 [head.bot_telegram] INFO: Telegram bot started
@@ -176,10 +176,10 @@ python -m head.main /path/to/config.yaml
 按 `Ctrl+C` 或发送 `SIGTERM` 信号即可优雅关闭：
 
 ```
-2026-03-14 10:30:00 [remote-claude] INFO: Received SIGINT, shutting down...
-2026-03-14 10:30:00 [remote-claude] INFO: Cleaning up...
-2026-03-14 10:30:00 [remote-claude] INFO: Closing tunnel to my-gpu
-2026-03-14 10:30:01 [remote-claude] INFO: Remote Claude stopped
+2026-03-14 10:30:00 [remote-code] INFO: Received SIGINT, shutting down...
+2026-03-14 10:30:00 [remote-code] INFO: Cleaning up...
+2026-03-14 10:30:00 [remote-code] INFO: Closing tunnel to my-gpu
+2026-03-14 10:30:01 [remote-code] INFO: Remote Code stopped
 ```
 
 系统会依次：停止所有 Bot → 关闭 HTTP 客户端 → 关闭所有 SSH 隧道 → 取消残余异步任务。
@@ -191,7 +191,7 @@ python -m head.main /path/to/config.yaml
 ### Daemon 启动失败
 
 - 检查远程机器上的 Node.js 版本（需要 18+）
-- 检查 `~/.remote-claude/daemon.log` 中的错误日志
+- 检查 `~/.remote-code/daemon.log` 中的错误日志
 - 确保 `claude` 命令在远程机器的 PATH 中
 
 ### SSH 连接失败

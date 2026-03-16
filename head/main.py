@@ -1,5 +1,5 @@
 """
-Remote Claude - Main Entry Point
+Remote Code - Main Entry Point
 
 Starts the Head Node with configured bots (Discord, Telegram, or both).
 Uses the adapter + engine pattern: each platform gets a PlatformAdapter
@@ -29,16 +29,40 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-logger = logging.getLogger("remote-claude")
+logger = logging.getLogger("remote-code")
 
 # Store startup info for restart via os.execv
 _startup_executable: str = sys.executable
-_startup_config_path: str = "config.yaml"
+_startup_config_path: str = ""
 _startup_workdir: str = os.getcwd()
 
 
-async def main(config_path: str = "config.yaml") -> None:
+def _resolve_config_path(explicit: str = "") -> str:
+    """Resolve config path: explicit arg > ~/.remote-code/config.yaml > ./config.yaml."""
+    if explicit:
+        return explicit
+    home_config = Path.home() / ".remote-code" / "config.yaml"
+    if home_config.exists():
+        return str(home_config)
+    return "config.yaml"
+
+
+def _migrate_from_old_path() -> None:
+    """Auto-migrate ~/.remote-claude/ -> ~/.remote-code/ if needed."""
+    old_dir = Path.home() / ".remote-claude"
+    new_dir = Path.home() / ".remote-code"
+    if old_dir.exists() and not new_dir.exists():
+        import shutil
+        shutil.move(str(old_dir), str(new_dir))
+        logger.info(f"Migrated {old_dir} -> {new_dir}")
+    elif old_dir.exists() and new_dir.exists():
+        logger.warning(f"Both {old_dir} and {new_dir} exist; skipping migration")
+
+
+async def main(config_path: str = "") -> None:
     """Main entry point."""
+    _migrate_from_old_path()
+    config_path = _resolve_config_path(config_path)
     # Load config
     try:
         config = load_config(config_path)
@@ -126,7 +150,7 @@ async def main(config_path: str = "config.yaml") -> None:
             task = asyncio.create_task(adapter.start(), name=name)
             tasks.append(task)
 
-        logger.info(f"Remote Claude started with {len(adapters)} bot(s)")
+        logger.info(f"Remote Code started with {len(adapters)} bot(s)")
         logger.info(f"Machines: {', '.join(config.machines.keys())}")
         logger.info(f"Default mode: {config.default_mode}")
 
@@ -165,10 +189,16 @@ async def main(config_path: str = "config.yaml") -> None:
                 except (asyncio.CancelledError, Exception):
                     pass
 
-        logger.info("Remote Claude stopped")
+        logger.info("Remote Code stopped")
+
+
+def cli_main() -> None:
+    """Entry point for the `remote-code` console script."""
+    config_file = sys.argv[1] if len(sys.argv) > 1 else ""
+    global _startup_config_path
+    _startup_config_path = config_file
+    asyncio.run(main(config_file))
 
 
 if __name__ == "__main__":
-    config_file = sys.argv[1] if len(sys.argv) > 1 else "config.yaml"
-    _startup_config_path = config_file
-    asyncio.run(main(config_file))
+    cli_main()

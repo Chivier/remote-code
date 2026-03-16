@@ -14,19 +14,19 @@ Handles syncing CLAUDE.md and `.claude/skills/` files from a shared source direc
 
 Skills flow through the system in two stages:
 
-1. **Head Node -> Remote Machine**: The SSHManager on the Head Node copies skills from the local `skills.shared_dir` to `~/.remote-claude/skills` on the remote machine via SCP.
-2. **Remote Skills Dir -> Project**: The SkillManager on the daemon copies from `~/.remote-claude/skills` to the specific project directory when a session is created.
+1. **Head Node -> Remote Machine**: The SSHManager on the Head Node copies skills from the local `skills.shared_dir` to `~/.remote-code/skills` on the remote machine via SCP.
+2. **Remote Skills Dir -> Project**: The SkillManager on the daemon copies from `~/.remote-code/skills` to the specific project directory when a session is created.
 
 ## Class: SkillManager
 
 ```typescript
 class SkillManager {
     private skillsSourceDir: string;
-    // Default: ~/.remote-claude/skills
+    // Default: ~/.remote-code/skills
 }
 ```
 
-The source directory defaults to `~/.remote-claude/skills` (based on the `HOME` environment variable).
+The source directory defaults to `~/.remote-code/skills` (based on the `HOME` environment variable).
 
 ## Key Methods
 
@@ -77,7 +77,7 @@ The SkillManager never overwrites existing files. This is a deliberate design ch
 Given this source structure:
 
 ```
-~/.remote-claude/skills/
+~/.remote-code/skills/
 ├── CLAUDE.md
 └── .claude/
     └── skills/
