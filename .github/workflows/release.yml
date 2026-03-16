@@ -6,42 +6,9 @@ on:
 
 permissions:
   contents: write
-  id-token: write  # Required for PyPI Trusted Publishers (OIDC)
+  id-token: write
 
 jobs:
-  build-wheels:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64
-          - os: macos-latest
-            target: aarch64
-          - os: windows-latest
-            target: x64
-
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Build wheel
-        run: |
-          pip install build setuptools setuptools-rust
-          python -m build --wheel
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheel-${{ matrix.os }}
-          path: dist/*.whl
-
   build-sdist:
     runs-on: ubuntu-latest
     steps:
@@ -61,7 +28,7 @@ jobs:
           name: sdist
           path: dist/*.tar.gz
 
-  # Also build standalone daemon binaries for GitHub Release downloads
+  # Standalone daemon binaries for GitHub Release downloads
   build-daemon:
     strategy:
       matrix:
@@ -105,7 +72,7 @@ jobs:
           path: ${{ matrix.binary }}
 
   github-release:
-    needs: [build-wheels, build-sdist, build-daemon]
+    needs: [build-sdist, build-daemon]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -130,11 +97,11 @@ jobs:
           generate_release_notes: true
 
   pypi-publish:
-    needs: [build-wheels, build-sdist]
+    needs: [build-sdist]
     runs-on: ubuntu-latest
-    environment: pypi  # Must match the environment name configured on PyPI
+    environment: pypi
     permissions:
-      id-token: write  # Required for OIDC Trusted Publisher
+      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -143,7 +110,6 @@ jobs:
       - name: Collect dist files
         run: |
           mkdir -p dist/
-          cp artifacts/wheel-*/*.whl dist/
           cp artifacts/sdist/*.tar.gz dist/
           ls -la dist/
 
