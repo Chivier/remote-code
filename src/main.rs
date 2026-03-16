@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
-use tracing::info;
+use tracing::{error, info, warn};
 
 use server::AppState;
 use session_pool::SessionPool;
@@ -53,10 +53,44 @@ async fn main() {
 
     let app = server::build_router(state.clone());
 
-    let addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
-    let listener = TcpListener::bind(addr).await.unwrap();
+    // Try binding to port, incrementing on collision (up to port+100)
+    let mut actual_port = port;
+    let listener = loop {
+        let addr: SocketAddr = format!("{}:{}", host, actual_port).parse().unwrap();
+        match TcpListener::bind(addr).await {
+            Ok(l) => break l,
+            Err(e) => {
+                warn!(
+                    "Port {} in use ({}), trying {}",
+                    actual_port,
+                    e,
+                    actual_port + 1
+                );
+                actual_port += 1;
+                if actual_port > port + 100 {
+                    error!("No available port in range {}..{}", port, port + 100);
+                    std::process::exit(1);
+                }
+            }
+        }
+    };
 
-    info!("[Daemon] Remote Code Daemon listening on {}:{}", host, port);
+    // Write actual port to file so the head node can discover it
+    if let Some(home) = dirs::home_dir() {
+        let port_file = home.join(".remote-code").join("daemon.port");
+        if let Some(parent) = port_file.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&port_file, actual_port.to_string()).ok();
+    }
+
+    // Print to stdout for head node to parse during startup
+    println!("DAEMON_PORT={}", actual_port);
+
+    info!(
+        "[Daemon] Remote Code Daemon listening on {}:{}",
+        host, actual_port
+    );
 
     // Graceful shutdown on SIGTERM/SIGINT
     let state_for_shutdown = state.clone();

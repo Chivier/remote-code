@@ -12,7 +12,9 @@ Uses asyncssh for async SSH operations and manages:
 import asyncio
 import logging
 import os
+import platform
 import shutil
+import socket
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -74,13 +76,87 @@ class SSHManager:
         self.tunnels: dict[str, SSHTunnel] = {}
         self._next_port = 19100  # Starting port for local tunnel endpoints
         self._daemon_source = Path(__file__).parent.parent / "daemon"
-        self._rust_binary = Path(__file__).parent.parent / "target" / "release" / "remote-code-daemon"
+        self._rust_binary = self._resolve_daemon_binary()
+
+    @staticmethod
+    def _resolve_daemon_binary() -> Path:
+        """Resolve the daemon binary path.
+
+        Resolution order:
+        1. target/release/remote-code-daemon (dev: local cargo build)
+        2. head/bin/remote-code-daemon-{platform} (installed via pip)
+        3. Falls back to dev path (cargo build will be triggered on deploy)
+        """
+        project_root = Path(__file__).parent.parent
+
+        # 1. Dev build
+        dev_binary = project_root / "target" / "release" / "remote-code-daemon"
+        if dev_binary.exists():
+            return dev_binary
+
+        # 2. Bundled binary matching current platform
+        bundled = SSHManager._get_bundled_binary_path()
+        if bundled and bundled.exists():
+            return bundled
+
+        # 3. Fallback to dev path (will trigger cargo build on deploy)
+        return dev_binary
+
+    @staticmethod
+    def _get_bundled_binary_path() -> Optional[Path]:
+        """Get path to bundled daemon binary for current platform."""
+        system = platform.system().lower()
+        machine = platform.machine().lower()
+
+        platform_map = {
+            ("linux", "x86_64"): "remote-code-daemon-linux-x64",
+            ("linux", "amd64"): "remote-code-daemon-linux-x64",
+            ("darwin", "arm64"): "remote-code-daemon-macos-arm64",
+            ("darwin", "aarch64"): "remote-code-daemon-macos-arm64",
+            ("windows", "x86_64"): "remote-code-daemon-windows-x64.exe",
+            ("windows", "amd64"): "remote-code-daemon-windows-x64.exe",
+        }
+
+        binary_name = platform_map.get((system, machine))
+        if not binary_name:
+            return None
+
+        return Path(__file__).parent / "bin" / binary_name
 
     def _alloc_port(self) -> int:
-        """Allocate a local port for SSH tunnel."""
-        port = self._next_port
-        self._next_port += 1
-        return port
+        """Allocate an available local port for SSH tunnel."""
+        while self._next_port < 19100 + 200:
+            port = self._next_port
+            self._next_port += 1
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.bind(("127.0.0.1", port))
+                s.close()
+                return port
+            except OSError:
+                logger.debug(f"Port {port} in use, trying next")
+        raise RuntimeError("No available local port in range 19100..19300")
+
+    async def _read_daemon_port_remote(self, conn: asyncssh.SSHClientConnection, default: int) -> int:
+        """Read the actual daemon port from ~/.remote-code/daemon.port on a remote machine."""
+        try:
+            result = await conn.run("cat ~/.remote-code/daemon.port 2>/dev/null || true")
+            stdout = (result.stdout or "").strip()
+            if stdout:
+                return int(stdout)
+        except (ValueError, Exception) as e:
+            logger.debug(f"Could not read remote daemon.port: {e}")
+        return default
+
+    def _read_daemon_port_local(self, default: int) -> int:
+        """Read the actual daemon port from ~/.remote-code/daemon.port locally."""
+        port_file = Path.home() / ".remote-code" / "daemon.port"
+        try:
+            if port_file.exists():
+                return int(port_file.read_text().strip())
+        except (ValueError, Exception) as e:
+            logger.debug(f"Could not read local daemon.port: {e}")
+        return default
 
     def _get_machine(self, machine_id: str) -> MachineConfig:
         """Get machine config by ID, raising if not found."""
@@ -163,31 +239,39 @@ class SSHManager:
         if machine.localhost:
             logger.info(f"Localhost machine {machine_id}: using direct connection to port {machine.daemon_port}")
             await self._ensure_daemon_local(machine)
+            actual_port = self._read_daemon_port_local(machine.daemon_port)
+            if actual_port != machine.daemon_port:
+                logger.info(f"Daemon on {machine_id} using port {actual_port} (configured: {machine.daemon_port})")
             tunnel = SSHTunnel(
-                machine_id, machine.daemon_port,
+                machine_id, actual_port,
                 conn=None, listener=None, is_localhost=True,
             )
             self.tunnels[machine_id] = tunnel
-            return machine.daemon_port
+            return actual_port
 
         local_port = self._alloc_port()
-
-        logger.info(f"Creating SSH tunnel: localhost:{local_port} -> {machine_id}:localhost:{machine.daemon_port}")
 
         # Establish SSH connection
         conn = await self._connect_ssh(machine)
 
-        # Create local port forwarding
+        # Ensure daemon is running on remote (may pick a different port)
+        await self._ensure_daemon(machine_id, conn)
+
+        # Read the actual daemon port (may differ from configured if port was busy)
+        actual_remote_port = await self._read_daemon_port_remote(conn, machine.daemon_port)
+        if actual_remote_port != machine.daemon_port:
+            logger.info(f"Daemon on {machine_id} using port {actual_remote_port} (configured: {machine.daemon_port})")
+
+        logger.info(f"Creating SSH tunnel: localhost:{local_port} -> {machine_id}:localhost:{actual_remote_port}")
+
+        # Create local port forwarding to actual daemon port
         listener = await conn.forward_local_port(
             "127.0.0.1", local_port,
-            "127.0.0.1", machine.daemon_port,
+            "127.0.0.1", actual_remote_port,
         )
 
         tunnel = SSHTunnel(machine_id, local_port, conn, listener)
         self.tunnels[machine_id] = tunnel
-
-        # Ensure daemon is running on remote
-        await self._ensure_daemon(machine_id, conn)
 
         logger.info(f"Tunnel to {machine_id} ready on port {local_port}")
         return local_port
@@ -238,16 +322,18 @@ class SSHManager:
         await conn.run(start_cmd)
 
         # Wait for daemon to be ready (poll health endpoint)
+        # Read actual port from port file since daemon may have picked a different one
         for attempt in range(15):
             await asyncio.sleep(2)
+            check_port = await self._read_daemon_port_remote(conn, machine.daemon_port)
             health_result = await conn.run(
-                f"curl -sf http://127.0.0.1:{machine.daemon_port}/rpc "
+                f"curl -sf http://127.0.0.1:{check_port}/rpc "
                 f'-d \'{{"method":"health.check"}}\' '
                 f"-H 'Content-Type: application/json' 2>/dev/null || true"
             )
             health_out = health_result.stdout.strip() if health_result.stdout else ""
             if '"ok":true' in health_out or '"ok": true' in health_out:
-                logger.info(f"Daemon started on {machine_id}")
+                logger.info(f"Daemon started on {machine_id} (port {check_port})")
                 return
 
         raise RuntimeError(f"Daemon failed to start on {machine_id} after 30s")
@@ -305,20 +391,22 @@ class SSHManager:
             )
 
         # Wait for daemon to be ready
+        # Read actual port from port file since daemon may have picked a different one
         import aiohttp
         for attempt in range(15):
             await asyncio.sleep(2)
+            check_port = self._read_daemon_port_local(machine.daemon_port)
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
-                        f"http://127.0.0.1:{machine.daemon_port}/rpc",
+                        f"http://127.0.0.1:{check_port}/rpc",
                         json={"method": "health.check"},
                         timeout=aiohttp.ClientTimeout(total=5),
                     ) as resp:
                         data = await resp.json()
                         result = data.get("result", data)
                         if result.get("ok"):
-                            logger.info(f"Local daemon started on port {machine.daemon_port}")
+                            logger.info(f"Local daemon started on port {check_port}")
                             return
             except Exception:
                 pass
