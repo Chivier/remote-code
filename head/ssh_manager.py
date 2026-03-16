@@ -439,23 +439,24 @@ class SSHManager:
 
     async def list_machines(self) -> list[dict]:
         """List all configured machines with their online status.
-        
+
+        Checks all machines in parallel with a short timeout.
         Skips machines that are only used as jump hosts (proxy_jump targets).
         """
         # Find which machines are only used as jump hosts
         jump_hosts = {m.proxy_jump for m in self.machines.values() if m.proxy_jump}
 
-        results = []
-        for machine_id, machine in self.machines.items():
-            # Skip pure jump hosts
-            if machine_id in jump_hosts and not machine.default_paths:
-                continue
+        # Filter to machines we want to check
+        targets = [
+            (mid, m) for mid, m in self.machines.items()
+            if not (mid in jump_hosts and not m.default_paths)
+        ]
 
+        async def check_machine(machine_id: str, machine: MachineConfig) -> dict:
             status = "unknown"
             daemon_status = "unknown"
 
             if machine.localhost:
-                # Localhost machine: check directly
                 status = "online"
                 try:
                     result = subprocess.run(
@@ -469,10 +470,9 @@ class SSHManager:
                 try:
                     conn = await asyncio.wait_for(
                         self._connect_ssh(machine),
-                        timeout=15.0,
+                        timeout=5.0,
                     )
                     status = "online"
-                    # Check if daemon is running
                     daemon_check = await conn.run(
                         f"pgrep -f 'remote-code-daemon' > /dev/null 2>&1 && echo 'running' || echo 'stopped'"
                     )
@@ -483,7 +483,7 @@ class SSHManager:
                     daemon_status = "unknown"
                     logger.debug(f"list_machines: {machine_id} unreachable: {e}")
 
-            results.append({
+            return {
                 "id": machine_id,
                 "host": machine.host,
                 "user": machine.user,
@@ -491,9 +491,13 @@ class SSHManager:
                 "daemon": daemon_status if status == "online" else "unknown",
                 "default_paths": machine.default_paths,
                 "localhost": machine.localhost,
-            })
+            }
 
-        return results
+        # Check all machines in parallel
+        results = await asyncio.gather(
+            *(check_machine(mid, m) for mid, m in targets)
+        )
+        return list(results)
 
     def get_local_port(self, machine_id: str) -> Optional[int]:
         """Get the local tunnel port for a machine, if tunnel exists."""
