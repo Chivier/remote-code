@@ -44,6 +44,8 @@ class DiscordConfig:
 class TelegramConfig:
     token: str
     allowed_users: list[int] = field(default_factory=list)
+    admin_users: list[int] = field(default_factory=list)
+    allowed_chats: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -213,6 +215,8 @@ def load_config(config_path: str = "config.yaml") -> Config:
             config.bot.telegram = TelegramConfig(
                 token=telegram_raw.get("token", ""),
                 allowed_users=[int(u) for u in telegram_raw.get("allowed_users", [])],
+                admin_users=[int(u) for u in telegram_raw.get("admin_users", [])],
+                allowed_chats=[int(c) for c in telegram_raw.get("allowed_chats", [])],
             )
 
     # Parse other config

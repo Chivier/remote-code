@@ -2,6 +2,8 @@
 Remote Claude - Main Entry Point
 
 Starts the Head Node with configured bots (Discord, Telegram, or both).
+Uses the adapter + engine pattern: each platform gets a PlatformAdapter
+paired with a BotEngine instance.
 """
 
 import asyncio
@@ -10,14 +12,15 @@ import os
 import signal
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from head.config import load_config, Config
 from head.ssh_manager import SSHManager
 from head.session_router import SessionRouter
 from head.daemon_client import DaemonClient
-from head.bot_discord import DiscordBot
-from head.bot_telegram import TelegramBot
+from head.engine import BotEngine
+from head.platform.discord_adapter import DiscordAdapter
+from head.platform.telegram_adapter import TelegramAdapter
 from head.file_pool import FilePool
 
 # Configure logging
@@ -58,38 +61,50 @@ async def main(config_path: str = "config.yaml") -> None:
     )
     daemon_client = DaemonClient()
 
-    # Initialize file pool for Discord attachments
+    # Initialize file pool for attachments
     file_pool = FilePool(
         max_size=config.file_pool.max_size,
         pool_dir=Path(config.file_pool.pool_dir).expanduser(),
         allowed_types=config.file_pool.allowed_types,
     )
 
-    # Track bots for cleanup
-    bots: list[DiscordBot | TelegramBot] = []
+    # Track adapters and engines for cleanup
+    adapters: list[Any] = []
+    engines: list[BotEngine] = []
     tasks: list[asyncio.Task[None]] = []
 
-    # Initialize Discord bot
-    discord_bot: Optional[DiscordBot] = None
+    # Initialize Discord adapter + engine
     if config.bot.discord and config.bot.discord.token:
         try:
-            discord_bot = DiscordBot(ssh_manager, session_router, daemon_client, config, file_pool=file_pool)
-            bots.append(discord_bot)
+            discord_adapter = DiscordAdapter(config, file_pool=file_pool)
+            discord_engine = BotEngine(
+                discord_adapter, ssh_manager, session_router,
+                daemon_client, config, file_pool,
+            )
+            discord_adapter.set_input_handler(discord_engine.handle_input)
+            discord_adapter.set_engine(discord_engine)
+            adapters.append(discord_adapter)
+            engines.append(discord_engine)
             logger.info("Discord bot configured")
         except Exception as e:
             logger.error(f"Failed to initialize Discord bot: {e}")
 
-    # Initialize Telegram bot
-    telegram_bot: Optional[TelegramBot] = None
+    # Initialize Telegram adapter + engine
     if config.bot.telegram and config.bot.telegram.token:
         try:
-            telegram_bot = TelegramBot(ssh_manager, session_router, daemon_client, config)
-            bots.append(telegram_bot)
+            telegram_adapter = TelegramAdapter(config.bot.telegram)
+            telegram_engine = BotEngine(
+                telegram_adapter, ssh_manager, session_router,
+                daemon_client, config,
+            )
+            telegram_adapter.set_input_handler(telegram_engine.handle_input)
+            adapters.append(telegram_adapter)
+            engines.append(telegram_engine)
             logger.info("Telegram bot configured")
         except Exception as e:
             logger.error(f"Failed to initialize Telegram bot: {e}")
 
-    if not bots:
+    if not adapters:
         logger.error("No bots configured. Set discord and/or telegram tokens in config.yaml")
         sys.exit(1)
 
@@ -104,17 +119,14 @@ async def main(config_path: str = "config.yaml") -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, handle_shutdown, sig)
 
-    # Start bots
+    # Start adapters
     try:
-        if discord_bot:
-            task = asyncio.create_task(discord_bot.start(), name="discord")
+        for adapter in adapters:
+            name = adapter.platform_name
+            task = asyncio.create_task(adapter.start(), name=name)
             tasks.append(task)
 
-        if telegram_bot:
-            task = asyncio.create_task(telegram_bot.start(), name="telegram")
-            tasks.append(task)
-
-        logger.info(f"Remote Claude started with {len(bots)} bot(s)")
+        logger.info(f"Remote Claude started with {len(adapters)} bot(s)")
         logger.info(f"Machines: {', '.join(config.machines.keys())}")
         logger.info(f"Default mode: {config.default_mode}")
 
@@ -135,9 +147,9 @@ async def main(config_path: str = "config.yaml") -> None:
         # Cleanup
         logger.info("Cleaning up...")
 
-        for bot in bots:
+        for adapter in adapters:
             try:
-                await bot.stop()
+                await adapter.stop()
             except Exception as e:
                 logger.warning(f"Error stopping bot: {e}")
 

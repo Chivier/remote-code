@@ -1,8 +1,8 @@
 """
-File Pool - manages local cache of Discord-uploaded files.
+File Pool - manages local cache of uploaded files.
 
-Downloads Discord attachments to a local directory, generates unique file IDs,
-and handles LRU eviction when the pool exceeds its configured max size.
+Stores files from any platform adapter to a local directory, generates unique
+file IDs, and handles LRU eviction when the pool exceeds its configured max size.
 """
 
 import logging
@@ -98,7 +98,7 @@ def _guess_mime_type(filename: str) -> str:
 
 class FilePool:
     """
-    Local file cache for Discord attachments.
+    Local file cache for uploaded files from any platform.
 
     Manages a directory of downloaded files with LRU eviction
     when total size exceeds the configured maximum.
@@ -202,6 +202,107 @@ class FilePool:
 
         logger.info(
             f"Downloaded {attachment.filename} ({attachment.size} bytes) "
+            f"as {file_id} to {local_path}"
+        )
+
+        return entry
+
+    async def store_file(
+        self,
+        data: bytes,
+        original_name: str,
+        mime_type: str = "application/octet-stream",
+        session_prefix: str = "",
+    ) -> FileEntry:
+        """
+        Store raw bytes into the pool.
+
+        Generic entry point for any platform adapter.
+        """
+        size = len(data)
+        if size > self.max_size:
+            raise ValueError(
+                f"File {original_name} ({size} bytes) exceeds "
+                f"pool max size ({self.max_size} bytes)"
+            )
+
+        uuid_short = uuid.uuid4().hex[:8]
+        prefix = f"{session_prefix}_" if session_prefix else ""
+        file_id = f"{prefix}{uuid_short}"
+
+        safe_name = _sanitize_filename(original_name)
+        local_filename = f"{file_id}_{safe_name}"
+        local_path = self.pool_dir / local_filename
+
+        local_path.write_bytes(data)
+
+        entry = FileEntry(
+            file_id=file_id,
+            original_name=original_name,
+            local_path=local_path,
+            size=size,
+            mime_type=mime_type,
+            created_at=time.time(),
+        )
+
+        self._entries[file_id] = entry
+        self._evict_if_needed()
+
+        logger.info(
+            f"Stored {original_name} ({size} bytes) "
+            f"as {file_id} to {local_path}"
+        )
+
+        return entry
+
+    async def store_from_path(
+        self,
+        source: Path,
+        original_name: str,
+        mime_type: str = "application/octet-stream",
+        session_prefix: str = "",
+    ) -> FileEntry:
+        """
+        Store a file from a local path into the pool (copies into pool dir).
+
+        Generic entry point for any platform adapter.
+        """
+        import shutil
+
+        if not source.exists():
+            raise FileNotFoundError(f"Source file not found: {source}")
+
+        size = source.stat().st_size
+        if size > self.max_size:
+            raise ValueError(
+                f"File {original_name} ({size} bytes) exceeds "
+                f"pool max size ({self.max_size} bytes)"
+            )
+
+        uuid_short = uuid.uuid4().hex[:8]
+        prefix = f"{session_prefix}_" if session_prefix else ""
+        file_id = f"{prefix}{uuid_short}"
+
+        safe_name = _sanitize_filename(original_name)
+        local_filename = f"{file_id}_{safe_name}"
+        local_path = self.pool_dir / local_filename
+
+        shutil.copy2(str(source), str(local_path))
+
+        entry = FileEntry(
+            file_id=file_id,
+            original_name=original_name,
+            local_path=local_path,
+            size=size,
+            mime_type=mime_type,
+            created_at=time.time(),
+        )
+
+        self._entries[file_id] = entry
+        self._evict_if_needed()
+
+        logger.info(
+            f"Stored {original_name} ({size} bytes) "
             f"as {file_id} to {local_path}"
         )
 

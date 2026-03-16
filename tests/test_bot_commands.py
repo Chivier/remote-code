@@ -1,37 +1,78 @@
 """
-Tests for bot command logic in head/bot_base.py
+Tests for bot command logic in head/engine.py (BotEngine)
 """
 
 import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from pathlib import Path
 from typing import Any, Optional
 
-from head.bot_base import BotBase
+from head.engine import BotEngine
+from head.platform.protocol import MessageHandle, FileAttachment, InputHandler
 from head.config import Config, MachineConfig
 from head.session_router import SessionRouter, Session
 from head.daemon_client import DaemonClient, DaemonError, DaemonConnectionError
 
 
-# ─── MockBot: concrete subclass of BotBase for testing ───
+# ─── MockAdapter: implements PlatformAdapter protocol for testing ───
 
 
-class MockBot(BotBase):
-    """Concrete BotBase subclass that records sent/edited messages."""
+class MockAdapter:
+    """Mock PlatformAdapter that records sent/edited messages."""
 
-    def __init__(self, ssh_manager, session_router, daemon_client, config):
-        super().__init__(ssh_manager, session_router, daemon_client, config)
+    def __init__(self):
         self.sent_messages: list[tuple[str, str]] = []  # (channel_id, text)
-        self.edited_messages: list[tuple[str, Any, str]] = []  # (channel_id, msg_obj, text)
+        self.edited_messages: list[tuple[str, str]] = []  # (handle_msg_id, text)
         self._msg_counter = 0
+        self._on_input: Optional[InputHandler] = None
 
-    async def send_message(self, channel_id: str, text: str) -> Any:
+    @property
+    def platform_name(self) -> str:
+        return "discord"
+
+    @property
+    def max_message_length(self) -> int:
+        return 2000
+
+    async def send_message(self, channel_id: str, text: str) -> MessageHandle:
         self._msg_counter += 1
         self.sent_messages.append((channel_id, text))
-        return f"msg-{self._msg_counter}"
+        return MessageHandle(
+            platform="discord",
+            channel_id=channel_id,
+            message_id=f"msg-{self._msg_counter}",
+        )
 
-    async def edit_message(self, channel_id: str, message_obj: Any, text: str) -> None:
-        self.edited_messages.append((channel_id, message_obj, text))
+    async def edit_message(self, handle: MessageHandle, text: str) -> None:
+        self.edited_messages.append((handle.message_id, text))
+
+    async def delete_message(self, handle: MessageHandle) -> None:
+        pass
+
+    async def download_file(self, attachment: FileAttachment, dest: Path) -> Path:
+        return dest
+
+    async def send_file(self, channel_id: str, path: Path, caption: str = "") -> MessageHandle:
+        return MessageHandle(platform="discord", channel_id=channel_id, message_id="file-1")
+
+    async def start_typing(self, channel_id: str) -> None:
+        pass
+
+    async def stop_typing(self, channel_id: str) -> None:
+        pass
+
+    def supports_message_edit(self) -> bool:
+        return True
+
+    def supports_inline_buttons(self) -> bool:
+        return False
+
+    def supports_file_upload(self) -> bool:
+        return True
+
+    def set_input_handler(self, handler: InputHandler) -> None:
+        self._on_input = handler
 
     async def start(self) -> None:
         pass
@@ -39,15 +80,31 @@ class MockBot(BotBase):
     async def stop(self) -> None:
         pass
 
+
+class MockBotEngine(BotEngine):
+    """BotEngine with convenience test methods for accessing recorded messages."""
+
+    def __init__(self, adapter, ssh_manager, session_router, daemon_client, config):
+        super().__init__(adapter, ssh_manager, session_router, daemon_client, config)
+        self.adapter: MockAdapter  # type hint for convenience
+
+    @property
+    def sent_messages(self) -> list[tuple[str, str]]:
+        return self.adapter.sent_messages
+
+    @property
+    def edited_messages(self) -> list[tuple[str, str]]:
+        return self.adapter.edited_messages
+
     def get_last_message(self) -> Optional[str]:
         """Get the text of the last sent message."""
-        if self.sent_messages:
-            return self.sent_messages[-1][1]
+        if self.adapter.sent_messages:
+            return self.adapter.sent_messages[-1][1]
         return None
 
     def get_all_message_texts(self) -> list[str]:
         """Get all sent message texts."""
-        return [text for _, text in self.sent_messages]
+        return [text for _, text in self.adapter.sent_messages]
 
 
 # ─── Fixtures ───
@@ -100,7 +157,10 @@ def mock_config():
 
 @pytest.fixture
 def bot(mock_ssh, mock_router, mock_daemon, mock_config):
-    return MockBot(mock_ssh, mock_router, mock_daemon, mock_config)
+    adapter = MockAdapter()
+    engine = MockBotEngine(adapter, mock_ssh, mock_router, mock_daemon, mock_config)
+    adapter.set_input_handler(engine.handle_input)
+    return engine
 
 
 def _make_session(**kwargs):
@@ -862,16 +922,15 @@ class TestFullMessageFlow:
 
 class TestStartTildeExpansion:
     @pytest.mark.asyncio
-    async def test_tilde_expanded_in_path(self, bot, mock_daemon):
-        """~/Projects should be expanded to /home/user/Projects."""
+    async def test_tilde_not_expanded_locally(self, bot, mock_daemon):
+        """~/Projects should NOT be expanded locally - daemon handles it on the remote machine."""
         await bot.cmd_start("discord:100", ["gpu-1", "~/Projects/myapp"])
         # Check what path was passed to create_session
         call_args = mock_daemon.create_session.call_args
         if call_args:
-            # The second positional arg is the path
             actual_path = call_args[0][1]
-            assert not actual_path.startswith("~"), f"Path not expanded: {actual_path}"
-            assert "Projects/myapp" in actual_path
+            # Path should be passed through as-is for the daemon to expand
+            assert actual_path == "~/Projects/myapp"
 
     @pytest.mark.asyncio
     async def test_absolute_path_unchanged(self, bot, mock_daemon):

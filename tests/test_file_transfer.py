@@ -1,5 +1,5 @@
 """
-Tests for file transfer integration in bot_base.py.
+Tests for file transfer integration in engine.py (BotEngine).
 
 Tests _upload_and_replace_files() and _forward_message() with file_refs parameter.
 """
@@ -10,32 +10,68 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Any, Optional
 from pathlib import Path
 
-from head.bot_base import BotBase
+from head.engine import BotEngine
+from head.platform.protocol import MessageHandle, InputHandler
 from head.config import Config, MachineConfig, FilePoolConfig
 from head.session_router import SessionRouter
 from head.daemon_client import DaemonClient
 from head.file_pool import FileEntry
 
 
-# ─── MockBot (same pattern as test_bot_commands.py) ───
+# ─── MockAdapter + MockBotEngine for testing ───
 
 
-class MockBot(BotBase):
-    """Concrete BotBase subclass that records sent/edited messages."""
+class MockAdapter:
+    """Mock PlatformAdapter that records sent/edited messages."""
 
-    def __init__(self, ssh_manager, session_router, daemon_client, config):
-        super().__init__(ssh_manager, session_router, daemon_client, config)
+    def __init__(self):
         self.sent_messages: list[tuple[str, str]] = []
-        self.edited_messages: list[tuple[str, Any, str]] = []
+        self.edited_messages: list[tuple[str, str]] = []
         self._msg_counter = 0
+        self._on_input: Optional[InputHandler] = None
 
-    async def send_message(self, channel_id: str, text: str) -> Any:
+    @property
+    def platform_name(self) -> str:
+        return "discord"
+
+    @property
+    def max_message_length(self) -> int:
+        return 2000
+
+    async def send_message(self, channel_id: str, text: str) -> MessageHandle:
         self._msg_counter += 1
         self.sent_messages.append((channel_id, text))
-        return f"msg-{self._msg_counter}"
+        return MessageHandle(platform="discord", channel_id=channel_id, message_id=f"msg-{self._msg_counter}")
 
-    async def edit_message(self, channel_id: str, message_obj: Any, text: str) -> None:
-        self.edited_messages.append((channel_id, message_obj, text))
+    async def edit_message(self, handle: MessageHandle, text: str) -> None:
+        self.edited_messages.append((handle.message_id, text))
+
+    async def delete_message(self, handle: MessageHandle) -> None:
+        pass
+
+    async def download_file(self, attachment, dest: Path) -> Path:
+        return dest
+
+    async def send_file(self, channel_id: str, path: Path, caption: str = "") -> MessageHandle:
+        return MessageHandle(platform="discord", channel_id=channel_id, message_id="file-1")
+
+    async def start_typing(self, channel_id: str) -> None:
+        pass
+
+    async def stop_typing(self, channel_id: str) -> None:
+        pass
+
+    def supports_message_edit(self) -> bool:
+        return True
+
+    def supports_inline_buttons(self) -> bool:
+        return False
+
+    def supports_file_upload(self) -> bool:
+        return True
+
+    def set_input_handler(self, handler: InputHandler) -> None:
+        self._on_input = handler
 
     async def start(self) -> None:
         pass
@@ -43,9 +79,21 @@ class MockBot(BotBase):
     async def stop(self) -> None:
         pass
 
+
+class MockBotEngine(BotEngine):
+    """BotEngine with convenience test accessors."""
+
+    def __init__(self, adapter, ssh_manager, session_router, daemon_client, config):
+        super().__init__(adapter, ssh_manager, session_router, daemon_client, config)
+        self.adapter: MockAdapter
+
+    @property
+    def sent_messages(self) -> list[tuple[str, str]]:
+        return self.adapter.sent_messages
+
     def get_last_message(self) -> Optional[str]:
-        if self.sent_messages:
-            return self.sent_messages[-1][1]
+        if self.adapter.sent_messages:
+            return self.adapter.sent_messages[-1][1]
         return None
 
 
@@ -85,7 +133,10 @@ def mock_config():
 
 @pytest.fixture
 def bot(mock_ssh, mock_router, mock_daemon, mock_config):
-    return MockBot(mock_ssh, mock_router, mock_daemon, mock_config)
+    adapter = MockAdapter()
+    engine = MockBotEngine(adapter, mock_ssh, mock_router, mock_daemon, mock_config)
+    adapter.set_input_handler(engine.handle_input)
+    return engine
 
 
 @pytest.fixture
