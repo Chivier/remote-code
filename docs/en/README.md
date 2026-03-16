@@ -27,7 +27,7 @@ When working with remote development servers -- GPU nodes behind firewalls, lab 
 ## Project Structure
 
 ```
-remote-claude/
+remote-code/
 ├── head/                    # Head Node (Python) - local orchestrator
 │   ├── main.py              # Entry point
 │   ├── config.py            # Configuration loader

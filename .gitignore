@@ -29,6 +29,12 @@ book/
 # Rust build artifacts
 target/
 
+# Python egg-info
+*.egg-info/
+
+# Bundled daemon binaries (placed by CI)
+head/bin/remote-code-daemon-*
+
 # OS
 .DS_Store
 Thumbs.db

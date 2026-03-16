@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # Remote Code - One-line installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/Chivier/remote-claude/main/scripts/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/Chivier/remote-code/main/scripts/install.sh | bash
 
-REPO="https://github.com/Chivier/remote-claude.git"
+REPO="https://github.com/Chivier/remote-code.git"
 INSTALL_DIR="${REMOTE_CODE_DIR:-$HOME/.local/share/remote-code}"
 CONFIG_DIR="$HOME/.remote-code"
 VENV_DIR="$INSTALL_DIR/.venv"
@@ -120,4 +120,4 @@ echo "Next steps:"
 echo "  1. Edit your config:  \$EDITOR $CONFIG_DIR/config.yaml"
 echo "  2. Start the bot:     remote-code"
 echo ""
-echo "Docs: https://github.com/Chivier/remote-claude#documentation"
+echo "Docs: https://github.com/Chivier/remote-code#documentation"

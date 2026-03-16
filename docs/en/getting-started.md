@@ -41,8 +41,8 @@ This guide walks you through setting up Remote Code from scratch.
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/Chivier/remote-claude.git
-cd remote-claude
+git clone https://github.com/Chivier/remote-code.git
+cd remote-code
 ```
 
 ### 2. Install Python Dependencies

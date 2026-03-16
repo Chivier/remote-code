@@ -30,7 +30,7 @@ Key properties:
 **One-line install:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Chivier/remote-claude/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Chivier/remote-code/main/scripts/install.sh | bash
 ```
 
 This clones the repo to `~/.remote-code/`, creates a virtualenv, installs dependencies, builds the daemon (if Rust is available), and sets up the `remote-code` CLI command.
@@ -38,8 +38,8 @@ This clones the repo to `~/.remote-code/`, creates a virtualenv, installs depend
 **Manual install:**
 
 ```bash
-git clone https://github.com/Chivier/remote-claude.git
-cd remote-claude
+git clone https://github.com/Chivier/remote-code.git
+cd remote-code
 pip install -e .              # installs deps + "remote-code" CLI command
 cp config.example.yaml ~/.remote-code/config.yaml
 # Edit config.yaml with your machines and bot token, then:

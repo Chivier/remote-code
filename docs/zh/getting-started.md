@@ -23,8 +23,8 @@
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/Chivier/remote-claude.git
-cd remote-claude
+git clone https://github.com/Chivier/remote-code.git
+cd remote-code
 ```
 
 ### 2. 安装 Python 依赖

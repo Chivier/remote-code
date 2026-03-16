@@ -1,0 +1,59 @@
+name: Lint & Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff check
+        run: ruff check head/ tests/
+
+      - name: Ruff format check
+        run: ruff format --check head/ tests/
+
+  rust-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Rustfmt check
+        run: cargo fmt --check
+
+  python-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -e .
+          pip install pytest pytest-asyncio
+
+      - name: Run tests
+        run: python -m pytest tests/ -v
