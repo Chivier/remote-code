@@ -27,19 +27,23 @@ Key properties:
 
 ## Quick Start
 
+**One-line install:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Chivier/remote-claude/main/scripts/install.sh | bash
+```
+
+This clones the repo to `~/.remote-code/`, creates a virtualenv, installs dependencies, builds the daemon (if Rust is available), and sets up the `remote-code` CLI command.
+
+**Manual install:**
+
 ```bash
 git clone https://github.com/Chivier/remote-claude.git
 cd remote-claude
 pip install -e .              # installs deps + "remote-code" CLI command
-cp config.example.yaml config.yaml
+cp config.example.yaml ~/.remote-code/config.yaml
 # Edit config.yaml with your machines and bot token, then:
-python -m head.main
-```
-
-Or install dependencies only:
-
-```bash
-pip install -r requirements.txt
+remote-code
 ```
 
 See [Getting Started](./docs/getting-started.md) for the full walkthrough.
