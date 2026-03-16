@@ -343,14 +343,21 @@ class TelegramAdapter:
         except Exception as e:
             logger.warning(f"Failed to set Telegram bot commands: {e}")
 
+        self._stop_event = asyncio.Event()
+
         await self._app.initialize()
         await self._app.start()
         await self._app.updater.start_polling()  # type: ignore
 
         logger.info("Telegram bot started")
 
+        # Block until stop() is called (mirrors Discord's start() behavior)
+        await self._stop_event.wait()
+
     async def stop(self) -> None:
         """Stop the Telegram bot."""
+        if hasattr(self, '_stop_event'):
+            self._stop_event.set()
         if self._app:
             logger.info("Stopping Telegram bot...")
             # Cancel all typing tasks
