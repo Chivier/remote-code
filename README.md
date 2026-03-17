@@ -30,41 +30,16 @@ Send a message in Discord or Telegram. It reaches Claude CLI on your GPU server,
 
 ## Architecture
 
-```
-  You (Discord / Telegram)
-        │
-        ▼
-  ┌──────────────┐
-  │  Head Node   │  ← Your laptop or a small always-on server
-  │  (Python)    │     Runs the chat bot
-  └──────┬───────┘
-         │ SSH tunnel (encrypted)
-         ▼
-  ┌──────────────┐
-  │   Daemon     │  ← Your GPU box / cloud VM / any Linux server
-  │   (Rust)     │     Manages Claude CLI processes
-  └──────┬───────┘
-         │ stdin/stdout
-         ▼
-  ┌──────────────┐
-  │  Claude CLI  │  ← Long-lived process, keeps full context
-  └──────────────┘
-```
+<p align="center">
+  <img src="docs/images/framework.svg" alt="Codecast Architecture" width="600">
+</p>
 
 ## Quick Start
 
 **Prerequisites:** Python 3.11+, [Rust/cargo](https://rustup.rs/), SSH access to a remote machine with Claude CLI installed.
 
-**Install:**
-
 ```bash
 pip install codecast
-```
-
-Or one-line from source:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Chivier/codecast/main/scripts/install.sh | bash
 ```
 
 **Configure:**

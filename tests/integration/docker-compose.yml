@@ -1,0 +1,23 @@
+# Docker Compose for Codecast integration tests
+#
+# Single-container approach: daemon + tests run together via localhost.
+# The daemon binds to 127.0.0.1 (security design), so we co-locate everything.
+#
+# Usage:
+#   # From project root:
+#   docker compose -f tests/integration/docker-compose.yml up --build --abort-on-container-exit
+#
+#   # Or directly:
+#   docker build -f tests/integration/Dockerfile -t codecast-integration .
+#   docker run --rm codecast-integration
+
+services:
+  integration:
+    build:
+      context: ../..
+      dockerfile: tests/integration/Dockerfile
+    container_name: codecast-integration
+    environment:
+      - DAEMON_PORT=9100
+      - RUST_LOG=info
+      - PYTHONUNBUFFERED=1
