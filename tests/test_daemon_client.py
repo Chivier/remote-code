@@ -439,3 +439,49 @@ class TestGetSession:
         assert s2 is not s1
         assert not s2.closed
         await s2.close()
+
+
+# ─── V2: extra_headers and base_url ───
+
+
+class TestDaemonClientV2:
+    def test_extra_headers_stored(self):
+        client = DaemonClient(extra_headers={"Authorization": "Bearer ccast_test"})
+        assert client._extra_headers["Authorization"] == "Bearer ccast_test"
+
+    def test_extra_headers_default_empty(self):
+        client = DaemonClient()
+        assert client._extra_headers == {}
+
+    def test_base_url_override(self):
+        client = DaemonClient(base_url="https://10.0.1.5:9100")
+        assert client._url() == "https://10.0.1.5:9100/rpc"
+
+    def test_base_url_trailing_slash_stripped(self):
+        client = DaemonClient(base_url="https://10.0.1.5:9100/")
+        assert client._url() == "https://10.0.1.5:9100/rpc"
+
+    def test_backwards_compat_local_port(self):
+        client = DaemonClient()
+        assert client._url(19100) == "http://127.0.0.1:19100/rpc"
+
+    def test_base_url_ignores_local_port(self):
+        client = DaemonClient(base_url="https://remote:9100")
+        assert client._url(19100) == "https://remote:9100/rpc"
+
+    @pytest.mark.asyncio
+    async def test_extra_headers_sent_in_rpc_call(self):
+        client = DaemonClient(extra_headers={"Authorization": "Bearer tok123"})
+        mock_session = MagicMock()
+        mock_resp = MockResponse({"result": {"ok": True}})
+        mock_session.post.return_value = mock_resp
+
+        with patch.object(client, "_get_session", return_value=mock_session):
+            await client._rpc_call(19100, "health.check")
+
+        # Verify headers were passed
+        call_kwargs = mock_session.post.call_args
+        assert "headers" in call_kwargs.kwargs or (len(call_kwargs.args) > 1)
+        headers = call_kwargs.kwargs.get("headers", {})
+        assert headers.get("Authorization") == "Bearer tok123"
+        assert headers.get("Content-Type") == "application/json"

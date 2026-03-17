@@ -18,13 +18,24 @@ logger = logging.getLogger(__name__)
 class DaemonClient:
     """JSON-RPC client for communicating with Remote Agent Daemon."""
 
-    def __init__(self, timeout: int = 300):
+    def __init__(
+        self,
+        timeout: int = 300,
+        extra_headers: Optional[dict[str, str]] = None,
+        base_url: Optional[str] = None,
+    ):
         """
         Args:
             timeout: Default timeout in seconds for RPC calls.
                      Longer timeout for send_message (Claude can think for a while).
+            extra_headers: Additional headers merged into every HTTP request
+                           (e.g. Authorization for token auth).
+            base_url: If set, _url() uses this instead of localhost:local_port.
+                      Useful for direct remote access without SSH tunnels.
         """
         self.timeout = timeout
+        self._extra_headers: dict[str, str] = extra_headers or {}
+        self._base_url = base_url
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -33,8 +44,10 @@ class DaemonClient:
             self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout))
         return self._session
 
-    def _url(self, local_port: int) -> str:
-        """Build URL for RPC endpoint via SSH tunnel."""
+    def _url(self, local_port: int = 0) -> str:
+        """Build URL for RPC endpoint via SSH tunnel or base_url override."""
+        if self._base_url:
+            return f"{self._base_url.rstrip('/')}/rpc"
         return f"http://127.0.0.1:{local_port}/rpc"
 
     async def _rpc_call(self, local_port: int, method: str, params: Optional[dict] = None) -> dict[str, Any]:
@@ -44,10 +57,14 @@ class DaemonClient:
         if params:
             payload["params"] = params
 
+        headers = {"Content-Type": "application/json"}
+        headers.update(self._extra_headers)
+
         try:
             async with session.post(
                 self._url(local_port),
                 json=payload,
+                headers=headers,
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 data: dict[str, Any] = await resp.json()
@@ -108,10 +125,14 @@ class DaemonClient:
             "params": {"sessionId": session_id, "message": message},
         }
 
+        headers = {"Content-Type": "application/json"}
+        headers.update(self._extra_headers)
+
         try:
             async with session.post(
                 self._url(local_port),
                 json=payload,
+                headers=headers,
                 timeout=aiohttp.ClientTimeout(
                     total=900,  # 15 minute total timeout
                     sock_read=idle_timeout,  # per-read timeout (idle detection)
