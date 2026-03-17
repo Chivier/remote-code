@@ -12,6 +12,7 @@ use tokio::sync::Notify;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::info;
 
+use crate::config::DaemonConfig;
 use crate::session_pool::SessionPool;
 use crate::skill_manager::SkillManager;
 use crate::types::{PermissionMode, RpcRequest, RpcResponse};
@@ -22,6 +23,7 @@ pub struct AppState {
     pub skill_manager: SkillManager,
     pub start_time: Instant,
     pub shutdown: Arc<Notify>,
+    pub config: DaemonConfig,
 }
 
 /// Build the axum router

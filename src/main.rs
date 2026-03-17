@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod config;
 mod message_queue;
 mod server;
 mod session_pool;
@@ -14,6 +15,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tracing::{error, info, warn};
 
+use config::DaemonConfig;
 use server::AppState;
 use session_pool::SessionPool;
 use skill_manager::SkillManager;
@@ -28,13 +30,10 @@ async fn main() {
         )
         .init();
 
-    // Parse port from environment
-    let port: u16 = std::env::var("DAEMON_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(9100);
-
-    let host = "127.0.0.1"; // Only bind to localhost (accessed via SSH tunnel)
+    // Load config from ~/.codecast/daemon.yaml with env var overrides
+    let config = DaemonConfig::load();
+    let port = config.port;
+    let host = config.bind.clone();
 
     let shutdown = Arc::new(Notify::new());
     let skill_manager = SkillManager::new();
@@ -49,6 +48,7 @@ async fn main() {
         skill_manager,
         start_time: Instant::now(),
         shutdown: shutdown.clone(),
+        config,
     });
 
     let app = server::build_router(state.clone());

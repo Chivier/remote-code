@@ -19,6 +19,7 @@ tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "6"
+serde_yaml = "0.9"
 tokio-stream = "0.1.18"
 futures-core = "0.3.32"
 
