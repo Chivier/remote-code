@@ -117,8 +117,10 @@ def _daemon_healthy(port: int) -> bool:
 # ---------------------------------------------------------------------------
 
 def _run_tui(args: argparse.Namespace) -> None:
-    """Launch the interactive TUI (placeholder)."""
-    print("Codecast TUI is not yet implemented. Use 'codecast bot start' for the chat bot.")
+    """Launch the interactive TUI."""
+    from head.tui.app import CodecastApp
+    app = CodecastApp(config_path=args.config)
+    app.run()
 
 
 def _cmd_start(args: argparse.Namespace) -> None:
