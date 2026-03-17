@@ -38,7 +38,7 @@ Repository = "https://github.com/Chivier/codecast"
 Issues = "https://github.com/Chivier/codecast/issues"
 
 [project.scripts]
-codecast = "head.main:cli_main"
+codecast = "head.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["head*"]
