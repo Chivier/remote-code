@@ -6,6 +6,7 @@ mod message_queue;
 mod server;
 mod session_pool;
 mod skill_manager;
+mod tls;
 mod types;
 
 use std::net::SocketAddr;
@@ -136,11 +137,51 @@ async fn main() {
         info!("[Daemon] All sessions destroyed");
     };
 
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal)
-    .await
-    .unwrap();
+    if state.config.requires_auth() {
+        // TLS mode: generate/load certificate and serve HTTPS
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let codecast_dir = home.join(".codecast");
+        let cert_path = state
+            .config
+            .tls_cert
+            .clone()
+            .unwrap_or_else(|| codecast_dir.join("tls-cert.pem"));
+        let key_path = state
+            .config
+            .tls_key
+            .clone()
+            .unwrap_or_else(|| codecast_dir.join("tls-key.pem"));
+
+        if let Err(e) = tls::ensure_tls_cert(&cert_path, &key_path) {
+            error!("[TLS] Failed to ensure TLS certificate: {}", e);
+            std::process::exit(1);
+        }
+
+        // Drop the plain TCP listener to free the port for axum-server
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path)
+            .await
+            .unwrap_or_else(|e| {
+                error!("[TLS] Failed to load TLS config: {}", e);
+                std::process::exit(1);
+            });
+
+        info!("[Daemon] Serving HTTPS on {}", addr);
+
+        axum_server::bind_rustls(addr, tls_config)
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+            .await
+            .unwrap();
+    } else {
+        // Plain HTTP mode for localhost
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal)
+        .await
+        .unwrap();
+    }
 }

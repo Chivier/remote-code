@@ -19,6 +19,10 @@ tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "6"
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rcgen = "0.13"
+sha2 = "0.10"
+hex = "0.4"
 serde_yaml = "0.9"
 tokio-stream = "0.1.18"
 futures-core = "0.3.32"
