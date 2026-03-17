@@ -1,6 +1,6 @@
 """Platform adapter protocol defining the interface each chat platform must implement."""
 
-from typing import Protocol, Any, Optional, runtime_checkable, Callable, Coroutine
+from typing import Protocol, Any, Optional, Union, runtime_checkable, Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,7 +28,7 @@ class FileAttachment:
 
 # Type alias for the input handler callback
 InputHandler = Callable[
-    [str, str, Optional[int], Optional[list[FileAttachment]]],
+    [str, str, Optional[Union[str, int]], Optional[list[FileAttachment]]],
     Coroutine[Any, Any, None],
 ]
 

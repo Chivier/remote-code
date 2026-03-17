@@ -49,9 +49,35 @@ class TelegramConfig:
 
 
 @dataclass
+class LarkConfig:
+    app_id: str
+    app_secret: str
+    allowed_chats: list[str] = field(default_factory=list)
+    admin_users: list[str] = field(default_factory=list)
+    use_cards: bool = True
+
+
+@dataclass
+class FileForwardRule:
+    pattern: str
+    max_size: int = 5 * 1024 * 1024
+    auto: bool = False
+
+
+@dataclass
+class FileForwardConfig:
+    enabled: bool = False
+    rules: list[FileForwardRule] = field(default_factory=list)
+    default_max_size: int = 5 * 1024 * 1024
+    default_auto: bool = False
+    download_dir: str = "~/.codecast/downloads"
+
+
+@dataclass
 class BotConfig:
     discord: Optional[DiscordConfig] = None
     telegram: Optional[TelegramConfig] = None
+    lark: Optional[LarkConfig] = None
 
 
 @dataclass
@@ -93,6 +119,7 @@ class Config:
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     daemon: DaemonDeployConfig = field(default_factory=DaemonDeployConfig)
     file_pool: FilePoolConfig = field(default_factory=FilePoolConfig)
+    file_forward: FileForwardConfig = field(default_factory=FileForwardConfig)
     tool_batch_size: int = 15  # Number of tool_use messages to batch into one
 
 
@@ -220,6 +247,15 @@ def load_config(config_path: str = "config.yaml") -> Config:
                 admin_users=[int(u) for u in telegram_raw.get("admin_users", [])],
                 allowed_chats=[int(c) for c in telegram_raw.get("allowed_chats", [])],
             )
+        lark_raw: Optional[dict[str, Any]] = bot_raw.get("lark")
+        if lark_raw:
+            config.bot.lark = LarkConfig(
+                app_id=lark_raw.get("app_id", ""),
+                app_secret=lark_raw.get("app_secret", ""),
+                allowed_chats=[str(c) for c in lark_raw.get("allowed_chats", [])],
+                admin_users=[str(u) for u in lark_raw.get("admin_users", [])],
+                use_cards=lark_raw.get("use_cards", True),
+            )
 
     # Parse other config
     config.default_mode = raw.get("default_mode", "auto")
@@ -247,6 +283,25 @@ def load_config(config_path: str = "config.yaml") -> Config:
             pool_dir=expand_env_vars(file_pool_raw.get("pool_dir", "~/.codecast/file-pool")),
             remote_dir=file_pool_raw.get("remote_dir", "/tmp/codecast/files"),
             allowed_types=file_pool_raw.get("allowed_types", list(DEFAULT_ALLOWED_FILE_TYPES)),
+        )
+
+    file_forward_raw: dict[str, Any] = raw.get("file_forward", {})
+    if file_forward_raw:
+        rules = []
+        for rule_raw in file_forward_raw.get("rules", []):
+            rules.append(
+                FileForwardRule(
+                    pattern=rule_raw.get("pattern", "*"),
+                    max_size=rule_raw.get("max_size", 5 * 1024 * 1024),
+                    auto=rule_raw.get("auto", False),
+                )
+            )
+        config.file_forward = FileForwardConfig(
+            enabled=file_forward_raw.get("enabled", False),
+            rules=rules,
+            default_max_size=file_forward_raw.get("default_max_size", 5 * 1024 * 1024),
+            default_auto=file_forward_raw.get("default_auto", False),
+            download_dir=file_forward_raw.get("download_dir", "~/.codecast/downloads"),
         )
 
     return config

@@ -184,8 +184,8 @@ class SSHManager:
                 return None
         return pw
 
-    async def _connect_ssh(self, machine: MachineConfig) -> asyncssh.SSHClientConnection:
-        """Establish SSH connection to a machine."""
+    async def _connect_ssh(self, machine: MachineConfig, timeout: float = 30.0) -> asyncssh.SSHClientConnection:
+        """Establish SSH connection to a machine with timeout."""
         connect_kwargs: dict = {
             "host": machine.host,
             "port": machine.port,
@@ -214,10 +214,16 @@ class SSHManager:
                 jump_kwargs["client_keys"] = [jump_machine.ssh_key]
             if jump_password:
                 jump_kwargs["password"] = jump_password
-            jump_conn = await asyncssh.connect(**jump_kwargs)
+            logger.info(f"Connecting to jump host {machine.proxy_jump} ({jump_machine.host})...")
+            jump_conn = await asyncio.wait_for(
+                asyncssh.connect(**jump_kwargs), timeout=timeout
+            )
             connect_kwargs["tunnel"] = jump_conn
 
-        conn = await asyncssh.connect(**connect_kwargs)
+        logger.info(f"Connecting to {machine.id} ({machine.host}:{machine.port})...")
+        conn = await asyncio.wait_for(
+            asyncssh.connect(**connect_kwargs), timeout=timeout
+        )
         return conn
 
     async def ensure_tunnel(self, machine_id: str) -> int:
@@ -659,6 +665,55 @@ class SSHManager:
             logger.info(f"Uploaded {entry.original_name} to {machine_id}:{remote_path}")
 
         return mapping
+
+    async def download_file(
+        self,
+        machine_id: str,
+        remote_path: str,
+        local_dir: str,
+    ) -> Path:
+        """Download a file from a remote machine via SCP.
+
+        Args:
+            machine_id: Target machine ID.
+            remote_path: Absolute path on the remote machine.
+            local_dir: Local directory to download into.
+
+        Returns:
+            Path to the downloaded local file.
+
+        Raises:
+            FileNotFoundError: If the remote file doesn't exist.
+            ValueError: If no active tunnel exists.
+        """
+        machine = self._get_machine(machine_id)
+        filename = Path(remote_path).name
+        local_base = Path(local_dir).expanduser()
+        local_base.mkdir(parents=True, exist_ok=True)
+        local_path = local_base / filename
+
+        if machine.localhost:
+            # Local copy — expand ~ in remote path
+            src = Path(remote_path).expanduser()
+            if not src.exists():
+                raise FileNotFoundError(f"File not found: {remote_path}")
+            shutil.copy2(str(src), str(local_path))
+            logger.info(f"Copied local file {remote_path} to {local_path}")
+            return local_path
+
+        # Remote: use SCP via existing tunnel connection
+        if machine_id not in self.tunnels or not self.tunnels[machine_id].alive:
+            raise ValueError(f"No active tunnel to {machine_id}")
+        conn = self.tunnels[machine_id].conn
+
+        # Check if file exists on remote
+        check = await conn.run(f"test -f {remote_path} && echo 'exists' || echo 'missing'")
+        if "missing" in (check.stdout or ""):
+            raise FileNotFoundError(f"Remote file not found: {remote_path}")
+
+        await asyncssh.scp((conn, remote_path), str(local_path))
+        logger.info(f"Downloaded {machine_id}:{remote_path} to {local_path}")
+        return local_path
 
     async def close_all(self) -> None:
         """Close all SSH tunnels and connections."""

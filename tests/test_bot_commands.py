@@ -554,14 +554,14 @@ class TestCmdStart:
     async def test_start_success(self, bot, mock_daemon):
         await bot.cmd_start("discord:100", ["gpu-1", "/home/user/project"])
         texts = bot.get_all_message_texts()
-        assert any("Session started" in t for t in texts)
-        assert any("bypass" in t for t in texts)  # default_mode="auto" -> display "bypass"
+        assert any("Session ready" in t for t in texts)
+        assert any("bypass" in t.lower() for t in texts)  # default_mode="auto" -> display "bypass"
 
     @pytest.mark.asyncio
     async def test_start_shows_name(self, bot, mock_daemon):
         await bot.cmd_start("discord:100", ["gpu-1", "/home/user/project"])
         texts = bot.get_all_message_texts()
-        assert any("Name: **" in t for t in texts)  # Name field present
+        assert any("Name:" in t for t in texts)  # Name field present
 
     @pytest.mark.asyncio
     async def test_start_shows_full_session_id(self, bot, mock_daemon):

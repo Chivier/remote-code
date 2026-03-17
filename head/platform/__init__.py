@@ -8,6 +8,7 @@ from head.platform.protocol import (
 )
 from head.platform.discord_adapter import DiscordAdapter
 from head.platform.telegram_adapter import TelegramAdapter
+from head.platform.lark_adapter import LarkAdapter
 
 __all__ = [
     "PlatformAdapter",
@@ -16,4 +17,5 @@ __all__ = [
     "InputHandler",
     "DiscordAdapter",
     "TelegramAdapter",
+    "LarkAdapter",
 ]

@@ -21,6 +21,7 @@ from head.daemon_client import DaemonClient
 from head.engine import BotEngine
 from head.platform.discord_adapter import DiscordAdapter
 from head.platform.telegram_adapter import TelegramAdapter
+from head.platform.lark_adapter import LarkAdapter
 from head.file_pool import FilePool
 
 # Configure logging
@@ -147,6 +148,25 @@ async def main(config_path: str = "") -> None:
             logger.info("Telegram bot configured")
         except Exception as e:
             logger.error(f"Failed to initialize Telegram bot: {e}")
+
+    # Initialize Lark adapter + engine
+    if config.bot.lark and config.bot.lark.app_id:
+        try:
+            lark_adapter = LarkAdapter(config.bot.lark)
+            lark_engine = BotEngine(
+                lark_adapter,
+                ssh_manager,
+                session_router,
+                daemon_client,
+                config,
+                file_pool,
+            )
+            lark_adapter.set_input_handler(lark_engine.handle_input)
+            adapters.append(lark_adapter)
+            engines.append(lark_engine)
+            logger.info("Lark bot configured")
+        except Exception as e:
+            logger.error(f"Failed to initialize Lark bot: {e}")
 
     if not adapters:
         logger.error("No bots configured. Set discord and/or telegram tokens in config.yaml")

@@ -769,15 +769,11 @@ class DiscordAdapter:
         async def slash_start(interaction: discord.Interaction, machine: str, path: str) -> None:
             channel_id = f"discord:{interaction.channel_id}"
             self._channels[channel_id] = interaction.channel
-            await interaction.response.send_message(f"Starting session on **{machine}**:`{path}`...")
-            if self._on_input:
+            await interaction.response.send_message(f"\u26a1 Starting session on **{machine}**:`{path}`...")
+            if self._engine:
                 try:
-                    await self._on_input(
-                        channel_id,
-                        f"/start {machine} {path}",
-                        interaction.user.id,
-                        None,
-                    )
+                    # Call engine directly with silent_init=True to avoid duplicate message
+                    await self._engine.cmd_start(channel_id, [machine, path], silent_init=True)
                 except Exception as e:
                     await self.send_message(channel_id, format_error(str(e)))
 
