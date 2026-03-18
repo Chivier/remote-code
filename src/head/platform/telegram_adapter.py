@@ -313,6 +313,7 @@ class TelegramAdapter:
             "remove",
             "destroy",
             "mode",
+            "tooldisplay",
             "status",
             "rename",
             "interrupt",
@@ -347,6 +348,7 @@ class TelegramAdapter:
                     BotCommand("ls", "List machines or sessions"),
                     BotCommand("exit", "Detach from current session"),
                     BotCommand("mode", "Switch permission mode"),
+                    BotCommand("tooldisplay", "Switch tool display mode"),
                     BotCommand("status", "Show current session info"),
                     BotCommand("interrupt", "Interrupt Claude"),
                     BotCommand("rename", "Rename current session"),
@@ -469,6 +471,7 @@ class TelegramAdapter:
         text = text.replace("/add_machine", "/add-machine")
         text = text.replace("/remove_machine", "/remove-machine")
         text = text.replace("/rm_session", "/rm-session")
+        text = text.replace("/tooldisplay", "/tool-display")
 
         if self._on_input:
             await self._on_input(channel_id, text, user.id, None)

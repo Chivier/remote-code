@@ -929,6 +929,24 @@ class DiscordAdapter:
                 except Exception as e:
                     await self.send_message(channel_id, format_error(str(e)))
 
+        # ------------------------------------------------------------------ /tool-display
+        @tree.command(name="tool-display", description="Switch tool display mode")
+        @app_commands.describe(mode="Tool display mode")
+        @app_commands.choices(
+            mode=[
+                app_commands.Choice(name="append - Show each tool call progressively", value="append"),
+                app_commands.Choice(name="batch - Show tool summary at end", value="batch"),
+            ]
+        )
+        async def slash_tool_display(interaction: discord.Interaction, mode: app_commands.Choice[str]) -> None:
+            await interaction.response.defer()
+            channel_id = self._defer_and_register(interaction)
+            if self._on_input:
+                try:
+                    await self._on_input(channel_id, f"/tool-display {mode.value}", interaction.user.id, None)
+                except Exception as e:
+                    await self.send_message(channel_id, format_error(str(e)))
+
         # ------------------------------------------------------------------ /status
         @tree.command(name="status", description="Show current session info and queue stats")
         async def slash_status(interaction: discord.Interaction) -> None:

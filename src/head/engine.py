@@ -218,6 +218,8 @@ class BotEngine:
                 await self.cmd_restart(channel_id, user_id)
             elif cmd == "/update":
                 await self.cmd_update(channel_id, user_id)
+            elif cmd in ("/tool-display", "/tooldisplay"):
+                await self.cmd_tool_display(channel_id, args)
             elif cmd == "/clear":
                 await self.cmd_clear(channel_id)
             elif cmd == "/new":
@@ -477,6 +479,33 @@ class BotEngine:
             await self.send_message(channel_id, f"🔐 Mode set to **{display_mode(mode)}**")
         else:
             await self.send_message(channel_id, format_error("Failed to set mode"))
+
+    async def cmd_tool_display(self, channel_id: str, args: list[str]) -> None:
+        """/tool-display <append|batch> - Switch tool display mode."""
+        if not args:
+            await self.send_message(
+                channel_id,
+                "Usage: `/tool-display <append|batch>`\n"
+                "  **append** - Show each tool call progressively (default)\n"
+                "  **batch** - Accumulate tool calls, show summary at end",
+            )
+            return
+
+        mode = args[0].lower()
+        if mode not in ("append", "batch"):
+            await self.send_message(
+                channel_id,
+                "Invalid tool display mode. Use: `append` or `batch`",
+            )
+            return
+
+        session = self.router.resolve(channel_id)
+        if not session:
+            await self.send_message(channel_id, "⚠️ No active session. Use `/start` first.")
+            return
+
+        self.router.update_tool_display(channel_id, mode)
+        await self.send_message(channel_id, f"🔧 Tool display set to **{mode}**")
 
     async def cmd_status(self, channel_id: str) -> None:
         """/status - Show current session status."""
@@ -1181,6 +1210,7 @@ class BotEngine:
 `/rm <peer> <path>` - Destroy session(s) by machine and path
 `/rm-session <name_or_id>` - Destroy a specific session by name or ID
 `/mode <auto|code|plan|ask>` - Switch permission mode
+`/tool-display <append|batch>` - Switch tool display mode
 `/rename <new_name>` - Rename current session
 `/status` - Show current session info
 `/health [peer]` - Check daemon health
@@ -1318,8 +1348,10 @@ After `/start` or `/resume`, send any message to interact with Claude."""
             # Activity message state (tools + thinking)
             activity_msg: Optional[MessageHandle] = None
             activity_lines: list[str] = []  # Tool call summary lines
+            batch_lines: list[str] = []  # Accumulated tool lines for batch mode
             thinking_buf: str = ""  # Accumulated partial text for thinking display
             last_activity_update = time.time()
+            tool_display = session.tool_display  # "append" or "batch"
 
             async def update_activity():
                 """Edit or create the activity message with current tool lines + thinking."""
@@ -1346,6 +1378,15 @@ After `/start` or `/resume`, send any message to interact with Claude."""
                 activity_msg = None
                 activity_lines = []
 
+            async def flush_batch():
+                """Send accumulated batch tool lines as a single summary message."""
+                nonlocal batch_lines
+                if batch_lines:
+                    summary = format_activity_message(batch_lines, "", cursor=False)
+                    if summary.strip():
+                        await self.send_message(channel_id, summary)
+                    batch_lines = []
+
             async for event in self.daemon.send_message(local_port, session.daemon_session_id, text):
                 event_type = event.get("type", "")
 
@@ -1353,9 +1394,13 @@ After `/start` or `/resume`, send any message to interact with Claude."""
                     continue
 
                 if event_type == "tool_use":
-                    activity_lines.append(format_tool_line(event))
+                    line = format_tool_line(event)
                     thinking_buf = ""  # Reset thinking when a new tool starts
-                    await update_activity()
+                    if tool_display == "batch":
+                        batch_lines.append(line)
+                    else:
+                        activity_lines.append(line)
+                        await update_activity()
 
                 elif event_type == "partial":
                     content = event.get("content", "")
@@ -1415,6 +1460,8 @@ After `/start` or `/resume`, send any message to interact with Claude."""
             # Finalize any remaining activity message
             thinking_buf = ""
             await finalize_activity()
+            # In batch mode, send accumulated tool summary
+            await flush_batch()
 
         except DaemonConnectionError as e:
             await self.send_message(

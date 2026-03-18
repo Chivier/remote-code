@@ -31,6 +31,7 @@ class Session:
     created_at: str
     updated_at: str
     name: Optional[str] = None  # human-friendly name like "bright-falcon"
+    tool_display: str = "append"  # append | batch
 
 
 class SessionRouter:
@@ -81,6 +82,8 @@ class SessionRouter:
 
             # Migrate existing databases: add 'name' column if missing
             self._migrate_add_name_column(conn)
+            # Migrate: add 'tool_display' column if missing
+            self._migrate_add_tool_display_column(conn)
         finally:
             conn.close()
 
@@ -92,6 +95,14 @@ class SessionRouter:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN name TEXT")
                 logger.info(f"Migrated {table}: added 'name' column")
         conn.commit()
+
+    def _migrate_add_tool_display_column(self, conn: sqlite3.Connection) -> None:
+        """Add 'tool_display' column to sessions table if not present."""
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()]
+        if "tool_display" not in columns:
+            conn.execute("ALTER TABLE sessions ADD COLUMN tool_display TEXT NOT NULL DEFAULT 'append'")
+            logger.info("Migrated sessions: added 'tool_display' column")
+            conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
         """Create a database connection."""
@@ -112,6 +123,7 @@ class SessionRouter:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             name=row["name"] if "name" in row.keys() else None,
+            tool_display=row["tool_display"] if "tool_display" in row.keys() else "append",
         )
 
     def resolve(self, channel_id: str) -> Optional[Session]:
@@ -200,6 +212,19 @@ class SessionRouter:
             conn.execute(
                 "UPDATE sessions SET mode = ?, updated_at = ? WHERE channel_id = ? AND status = 'active'",
                 (mode, now, channel_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def update_tool_display(self, channel_id: str, tool_display: str) -> None:
+        """Update the session tool display mode (append or batch)."""
+        now = datetime.now(timezone.utc).isoformat()
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE sessions SET tool_display = ?, updated_at = ? WHERE channel_id = ? AND status = 'active'",
+                (tool_display, now, channel_id),
             )
             conn.commit()
         finally:
