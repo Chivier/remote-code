@@ -111,8 +111,7 @@ class SSHTransport(Transport):
         )
 
         logger.info(
-            f"SSH tunnel to {self._peer_id}: "
-            f"localhost:{self._local_port} -> {self._ssh_host}:{self._daemon_port}"
+            f"SSH tunnel to {self._peer_id}: localhost:{self._local_port} -> {self._ssh_host}:{self._daemon_port}"
         )
 
     async def close(self) -> None:

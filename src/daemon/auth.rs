@@ -66,11 +66,7 @@ impl TokenStore {
                     );
                 }
                 Err(e) => {
-                    warn!(
-                        "[Auth] Failed to parse {}: {}",
-                        self.file_path.display(),
-                        e
-                    );
+                    warn!("[Auth] Failed to parse {}: {}", self.file_path.display(), e);
                 }
             },
             Err(_) => {
@@ -98,19 +94,11 @@ impl TokenStore {
                     );
                 }
                 Err(e) => {
-                    warn!(
-                        "[Auth] Failed to parse {}: {}",
-                        self.file_path.display(),
-                        e
-                    );
+                    warn!("[Auth] Failed to parse {}: {}", self.file_path.display(), e);
                 }
             },
             Err(e) => {
-                warn!(
-                    "[Auth] Failed to read {}: {}",
-                    self.file_path.display(),
-                    e
-                );
+                warn!("[Auth] Failed to read {}: {}", self.file_path.display(), e);
             }
         }
     }
@@ -174,10 +162,7 @@ pub async fn auth_middleware(
 
     // Validate the token
     if !state.token_store.validate(token).await {
-        warn!(
-            "[Auth] Rejected request from {} — invalid token",
-            addr
-        );
+        warn!("[Auth] Rejected request from {} — invalid token", addr);
         return (StatusCode::UNAUTHORIZED, "Unauthorized: invalid token").into_response();
     }
 

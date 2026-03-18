@@ -75,8 +75,7 @@ class PeerManager:
             {
                 "id": peer.id,
                 "transport": peer.transport,
-                "connected": self._transports.get(peer.id, None) is not None
-                and self._transports[peer.id].is_alive(),
+                "connected": self._transports.get(peer.id, None) is not None and self._transports[peer.id].is_alive(),
             }
             for peer in self.peers.values()
         ]
@@ -175,6 +174,4 @@ class PeerManager:
                 token="",
             )
         else:
-            raise ValueError(
-                f"Unknown transport type '{peer.transport}' for peer '{peer.id}'"
-            )
+            raise ValueError(f"Unknown transport type '{peer.transport}' for peer '{peer.id}'")

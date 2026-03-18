@@ -101,10 +101,7 @@ class TestMarkdownToLarkPost:
         result = markdown_to_lark_post(text)
         content = result["zh_cn"]["content"]
         # Code block lines should each have code_block style
-        code_lines = [
-            row for row in content
-            if len(row) == 1 and row[0].get("style") == ["code_block"]
-        ]
+        code_lines = [row for row in content if len(row) == 1 and row[0].get("style") == ["code_block"]]
         assert len(code_lines) == 2
         assert code_lines[0][0]["text"] == "print('hello')"
         assert code_lines[1][0]["text"] == "print('world')"
@@ -717,7 +714,10 @@ class TestLarkAdapterFileOps:
     async def test_download_file_no_client(self):
         adapter = _make_adapter()
         att = FileAttachment(
-            filename="f.txt", size=0, mime_type=None, url=None,
+            filename="f.txt",
+            size=0,
+            mime_type=None,
+            url=None,
             platform_ref={"message_id": "m1", "file_key": "fk1", "type": "file"},
         )
         with pytest.raises(RuntimeError, match="not initialized"):
@@ -735,7 +735,10 @@ class TestLarkAdapterFileOps:
         mock_client.im.v1.message_resource.get.return_value = resp
 
         att = FileAttachment(
-            filename="f.txt", size=0, mime_type=None, url=None,
+            filename="f.txt",
+            size=0,
+            mime_type=None,
+            url=None,
             platform_ref={"message_id": "m1", "file_key": "fk1", "type": "file"},
         )
         dest = MagicMock(spec=Path)
@@ -753,7 +756,10 @@ class TestLarkAdapterFileOps:
         mock_client.im.v1.message_resource.get.return_value = resp
 
         att = FileAttachment(
-            filename="f.txt", size=0, mime_type=None, url=None,
+            filename="f.txt",
+            size=0,
+            mime_type=None,
+            url=None,
             platform_ref={"message_id": "m1", "file_key": "fk1", "type": "file"},
         )
         with pytest.raises(RuntimeError, match="Failed to download"):

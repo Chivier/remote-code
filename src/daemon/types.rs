@@ -212,10 +212,7 @@ pub fn convert_claude_message(msg: &Value) -> Vec<StreamEvent> {
                 for block in content.iter() {
                     if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
                         events.push(StreamEvent::ToolUse {
-                            tool: block
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .map(String::from),
+                            tool: block.get("name").and_then(|v| v.as_str()).map(String::from),
                             input: block.get("input").cloned(),
                             message: None,
                             raw: None,

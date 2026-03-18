@@ -161,12 +161,13 @@ async fn main() {
         let addr = listener.local_addr().unwrap();
         drop(listener);
 
-        let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path)
-            .await
-            .unwrap_or_else(|e| {
-                error!("[TLS] Failed to load TLS config: {}", e);
-                std::process::exit(1);
-            });
+        let tls_config =
+            axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path)
+                .await
+                .unwrap_or_else(|e| {
+                    error!("[TLS] Failed to load TLS config: {}", e);
+                    std::process::exit(1);
+                });
 
         info!("[Daemon] Serving HTTPS on {}", addr);
 

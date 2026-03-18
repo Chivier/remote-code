@@ -18,9 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Match absolute paths (/...) and tilde paths (~/...) with file extensions.
 # Excludes paths inside backtick code spans and paths that are part of longer words.
-FILE_PATH_PATTERN = re.compile(
-    r'(?<![`\w])((?:/|~/)(?:[\w.~-]+/)*[\w.-]+\.(\w+))(?![`\w])'
-)
+FILE_PATH_PATTERN = re.compile(r"(?<![`\w])((?:/|~/)(?:[\w.~-]+/)*[\w.-]+\.(\w+))(?![`\w])")
 
 
 @dataclass

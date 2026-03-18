@@ -135,9 +135,7 @@ class TestSessionLifecycle:
 
     @pytest.mark.asyncio
     async def test_create_session_with_mode(self):
-        result = await rpc_call(
-            "session.create", {"path": TEST_PROJECT_PATH, "mode": "plan"}
-        )
+        result = await rpc_call("session.create", {"path": TEST_PROJECT_PATH, "mode": "plan"})
         session_id = result["sessionId"]
         assert session_id
 
@@ -182,9 +180,7 @@ class TestSessionLifecycle:
 
     @pytest.mark.asyncio
     async def test_destroy_nonexistent_session(self):
-        result = await rpc_call(
-            "session.destroy", {"sessionId": "00000000-0000-0000-0000-000000000000"}
-        )
+        result = await rpc_call("session.destroy", {"sessionId": "00000000-0000-0000-0000-000000000000"})
         # Should return ok=false or error, not crash
         assert result.get("ok") is False or result.get("ok") is True
 
@@ -320,9 +316,7 @@ class TestSessionMode:
         result = await rpc_call("session.create", {"path": TEST_PROJECT_PATH})
         session_id = result["sessionId"]
 
-        set_result = await rpc_call(
-            "session.set_mode", {"sessionId": session_id, "mode": "plan"}
-        )
+        set_result = await rpc_call("session.set_mode", {"sessionId": session_id, "mode": "plan"})
         assert set_result["ok"] is True
 
         # Verify mode changed
@@ -339,9 +333,7 @@ class TestSessionMode:
         session_id = result["sessionId"]
 
         for mode in ["auto", "code", "plan", "ask"]:
-            set_result = await rpc_call(
-                "session.set_mode", {"sessionId": session_id, "mode": mode}
-            )
+            set_result = await rpc_call("session.set_mode", {"sessionId": session_id, "mode": mode})
             assert set_result["ok"] is True
 
         await rpc_call("session.destroy", {"sessionId": session_id})
@@ -475,9 +467,7 @@ class TestDaemonClient:
 
         client = DaemonClient()
         try:
-            session_id = await client.create_session(
-                DAEMON_PORT, TEST_PROJECT_PATH, "auto"
-            )
+            session_id = await client.create_session(DAEMON_PORT, TEST_PROJECT_PATH, "auto")
             assert session_id
 
             sessions = await client.list_sessions(DAEMON_PORT)
@@ -495,14 +485,10 @@ class TestDaemonClient:
 
         client = DaemonClient()
         try:
-            session_id = await client.create_session(
-                DAEMON_PORT, TEST_PROJECT_PATH, "auto"
-            )
+            session_id = await client.create_session(DAEMON_PORT, TEST_PROJECT_PATH, "auto")
 
             events = []
-            async for event in client.send_message(
-                DAEMON_PORT, session_id, "echo:from-daemon-client"
-            ):
+            async for event in client.send_message(DAEMON_PORT, session_id, "echo:from-daemon-client"):
                 events.append(event)
 
             types = [e["type"] for e in events]
@@ -518,9 +504,7 @@ class TestDaemonClient:
 
         client = DaemonClient()
         try:
-            session_id = await client.create_session(
-                DAEMON_PORT, TEST_PROJECT_PATH, "auto"
-            )
+            session_id = await client.create_session(DAEMON_PORT, TEST_PROJECT_PATH, "auto")
 
             ok = await client.set_mode(DAEMON_PORT, session_id, "plan")
             assert ok is True
@@ -547,9 +531,7 @@ class TestDaemonClient:
 
         client = DaemonClient()
         try:
-            session_id = await client.create_session(
-                DAEMON_PORT, TEST_PROJECT_PATH, "auto"
-            )
+            session_id = await client.create_session(DAEMON_PORT, TEST_PROJECT_PATH, "auto")
 
             stats = await client.get_queue_stats(DAEMON_PORT, session_id)
             assert stats["userPending"] == 0

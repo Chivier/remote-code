@@ -6,8 +6,6 @@ import logging
 import shutil
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
-
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.screen import Screen
@@ -16,10 +14,13 @@ from textual.widgets.option_list import Option
 
 from .widgets import PeerTable, StatusPanel
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _check_claude_cli() -> bool:
     """Return True if the claude CLI binary is on PATH."""
@@ -35,6 +36,7 @@ def _check_daemon_running() -> tuple[bool, int | None]:
         return False, None
 
     import urllib.request
+
     try:
         req = urllib.request.Request(f"http://127.0.0.1:{port}/health", method="GET")
         with urllib.request.urlopen(req, timeout=2) as resp:
@@ -47,6 +49,7 @@ def _load_config(config_path: str):
     """Try to load ConfigV2; return None on failure."""
     try:
         from head.config_v2 import load_config_v2
+
         return load_config_v2(config_path)
     except Exception as exc:
         logger.warning("Failed to load config from %s: %s", config_path, exc)
@@ -80,8 +83,7 @@ class SetupWizardScreen(Screen):
         yield Header()
         yield Vertical(
             Static(
-                f"Welcome to Codecast! {self.version}\n"
-                "No configuration found. Starting setup wizard.\n",
+                f"Welcome to Codecast! {self.version}\nNo configuration found. Starting setup wizard.\n",
                 id="welcome",
             ),
             Static("What would you like to set up?", id="wizard_prompt"),
@@ -110,6 +112,7 @@ class SetupWizardScreen(Screen):
 # ---------------------------------------------------------------------------
 # Dashboard
 # ---------------------------------------------------------------------------
+
 
 class DashboardScreen(Screen):
     """Main dashboard shown when a config already exists."""
@@ -175,6 +178,7 @@ class DashboardScreen(Screen):
 # Start / Stop Daemon
 # ---------------------------------------------------------------------------
 
+
 class StartDaemonScreen(Screen):
     """Screen for starting or stopping the local daemon."""
 
@@ -192,10 +196,7 @@ class StartDaemonScreen(Screen):
         if daemon_running:
             msg = f"Daemon is running on port {daemon_port}."
         elif not claude_available:
-            msg = (
-                "Claude CLI not found on PATH.\n"
-                "Install Claude CLI first to run the daemon."
-            )
+            msg = "Claude CLI not found on PATH.\nInstall Claude CLI first to run the daemon."
         else:
             msg = "Daemon is not running. Claude CLI is available."
 
@@ -225,6 +226,7 @@ class StartDaemonScreen(Screen):
     def _start_daemon(self) -> None:
         import argparse
         from head.cli import _cmd_start
+
         try:
             ns = argparse.Namespace(config=self.config_path)
             _cmd_start(ns)
@@ -236,6 +238,7 @@ class StartDaemonScreen(Screen):
     def _stop_daemon(self) -> None:
         import argparse
         from head.cli import _cmd_stop
+
         try:
             ns = argparse.Namespace()
             _cmd_stop(ns)
@@ -251,6 +254,7 @@ class StartDaemonScreen(Screen):
 # ---------------------------------------------------------------------------
 # Add Peer
 # ---------------------------------------------------------------------------
+
 
 class AddPeerScreen(Screen):
     """Screen for adding a new remote peer."""
@@ -305,6 +309,7 @@ class AddPeerScreen(Screen):
 
     def _save_peer(self, address: str) -> None:
         from head.config_v2 import PeerConfig, ConfigV2, load_config_v2, save_config_v2
+
         try:
             cfg = load_config_v2(self.config_path)
         except FileNotFoundError:
@@ -319,8 +324,10 @@ class AddPeerScreen(Screen):
             else:
                 user, host = None, parts[0]
             peer = PeerConfig(
-                id=self._peer_name, transport="ssh",
-                ssh_host=host, ssh_user=user,
+                id=self._peer_name,
+                transport="ssh",
+                ssh_host=host,
+                ssh_user=user,
             )
         cfg.peers[self._peer_name] = peer
         Path(self.config_path).parent.mkdir(parents=True, exist_ok=True)
@@ -333,6 +340,7 @@ class AddPeerScreen(Screen):
 # ---------------------------------------------------------------------------
 # Configure Bot
 # ---------------------------------------------------------------------------
+
 
 class ConfigBotScreen(Screen):
     """Screen for configuring a bot (Discord or Telegram)."""
@@ -364,9 +372,13 @@ class ConfigBotScreen(Screen):
 
     def _save_bot_token(self, token: str) -> None:
         from head.config_v2 import (
-            ConfigV2, DiscordBotConfig, TelegramBotConfig,
-            load_config_v2, save_config_v2,
+            ConfigV2,
+            DiscordBotConfig,
+            TelegramBotConfig,
+            load_config_v2,
+            save_config_v2,
         )
+
         try:
             cfg = load_config_v2(self.config_path)
         except FileNotFoundError:
@@ -387,6 +399,7 @@ class ConfigBotScreen(Screen):
 # ---------------------------------------------------------------------------
 # Sessions
 # ---------------------------------------------------------------------------
+
 
 class SessionsScreen(Screen):
     """Screen for managing active sessions (placeholder)."""

@@ -75,12 +75,14 @@ def test_process_ownership():
     # Find daemon PIDs owned by alice
     alice_result = subprocess.run(
         ["pgrep", "-u", "alice", "-f", "codecast-daemon"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     # Find daemon PIDs owned by bob
     bob_result = subprocess.run(
         ["pgrep", "-u", "bob", "-f", "codecast-daemon"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
 
     alice_pids = set(alice_result.stdout.strip().splitlines()) if alice_result.returncode == 0 else set()
@@ -97,10 +99,14 @@ def test_process_ownership():
 @pytest.mark.asyncio
 async def test_alice_session_on_alice_daemon():
     """Alice can create a session in her own project directory."""
-    result = await _rpc(ALICE_PORT, "session.create", {
-        "path": "/home/alice/project",
-        "mode": "auto",
-    })
+    result = await _rpc(
+        ALICE_PORT,
+        "session.create",
+        {
+            "path": "/home/alice/project",
+            "mode": "auto",
+        },
+    )
     session_id = result.get("sessionId") or result.get("session_id")
     assert session_id, f"Failed to create Alice's session: {result}"
 
@@ -111,10 +117,14 @@ async def test_alice_session_on_alice_daemon():
 @pytest.mark.asyncio
 async def test_bob_session_on_bob_daemon():
     """Bob can create a session in his own project directory."""
-    result = await _rpc(BOB_PORT, "session.create", {
-        "path": "/home/bob/project",
-        "mode": "auto",
-    })
+    result = await _rpc(
+        BOB_PORT,
+        "session.create",
+        {
+            "path": "/home/bob/project",
+            "mode": "auto",
+        },
+    )
     session_id = result.get("sessionId") or result.get("session_id")
     assert session_id, f"Failed to create Bob's session: {result}"
 
@@ -126,19 +136,20 @@ async def test_bob_session_on_bob_daemon():
 async def test_sessions_isolated_between_daemons():
     """Sessions on Alice's daemon are not visible on Bob's daemon."""
     # Create session on Alice
-    alice_result = await _rpc(ALICE_PORT, "session.create", {
-        "path": "/home/alice/project",
-        "mode": "auto",
-    })
+    alice_result = await _rpc(
+        ALICE_PORT,
+        "session.create",
+        {
+            "path": "/home/alice/project",
+            "mode": "auto",
+        },
+    )
     alice_sid = alice_result.get("sessionId") or alice_result.get("session_id")
     assert alice_sid
 
     # List sessions on Bob — Alice's session should not appear
     bob_sessions = await _rpc(BOB_PORT, "session.list")
-    bob_sids = [
-        s.get("sessionId") or s.get("session_id") or s.get("id")
-        for s in (bob_sessions.get("sessions") or [])
-    ]
+    bob_sids = [s.get("sessionId") or s.get("session_id") or s.get("id") for s in (bob_sessions.get("sessions") or [])]
     assert alice_sid not in bob_sids, "Alice's session should not be visible on Bob's daemon"
 
     # Cleanup
@@ -151,10 +162,14 @@ async def test_sessions_isolated_between_daemons():
 @pytest.mark.asyncio
 async def test_alice_cannot_access_bob_dirs():
     """Alice's daemon should not be able to create sessions in Bob's home."""
-    result = await _rpc(ALICE_PORT, "session.create", {
-        "path": "/home/bob/project",
-        "mode": "auto",
-    })
+    result = await _rpc(
+        ALICE_PORT,
+        "session.create",
+        {
+            "path": "/home/bob/project",
+            "mode": "auto",
+        },
+    )
     # This may succeed (daemon doesn't restrict paths) or fail (permission denied).
     # If it succeeds, the session will run as alice and won't have write access.
     session_id = result.get("sessionId") or result.get("session_id")
@@ -163,7 +178,8 @@ async def test_alice_cannot_access_bob_dirs():
         # Verify by checking the daemon's process owner
         alice_result = subprocess.run(
             ["pgrep", "-u", "alice", "-f", "codecast-daemon"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert alice_result.returncode == 0, "Alice's daemon should run as alice"
         await _rpc(ALICE_PORT, "session.destroy", {"sessionId": session_id})

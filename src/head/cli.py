@@ -30,6 +30,7 @@ from pathlib import Path
 # Argument parsing
 # ---------------------------------------------------------------------------
 
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments and return the resulting namespace."""
     parser = argparse.ArgumentParser(
@@ -37,7 +38,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Codecast - interact with Claude CLI on remote machines",
     )
     parser.add_argument(
-        "--config", "-c",
+        "--config",
+        "-c",
         default=None,
         help="Path to config YAML file",
     )
@@ -81,7 +83,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # webui -----------------------------------------------------------
     sub_webui = subparsers.add_parser("webui", help="Start/stop the web UI")
     sub_webui.add_argument(
-        "webui_action", nargs="?", default="start",
+        "webui_action",
+        nargs="?",
+        default="start",
         choices=["start", "stop", "status"],
         help="Action to perform (default: start)",
     )
@@ -113,6 +117,7 @@ def _read_port_file() -> int | None:
 def _port_available(port: int, host: str = "127.0.0.1") -> bool:
     """Return True if *port* on *host* is available for binding."""
     import socket
+
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
             s.bind((host, port))
@@ -141,6 +146,7 @@ def _read_pid_file(path: Path) -> int | None:
 def _daemon_healthy(port: int) -> bool:
     """Quick health check against localhost:<port>."""
     import urllib.request
+
     try:
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/health",
@@ -156,9 +162,11 @@ def _daemon_healthy(port: int) -> bool:
 # Command handlers
 # ---------------------------------------------------------------------------
 
+
 def _run_tui(args: argparse.Namespace) -> None:
     """Launch the interactive TUI."""
     from head.tui.app import CodecastApp
+
     app = CodecastApp(config_path=args.config)
     app.run()
 
@@ -175,6 +183,7 @@ def _cmd_start(args: argparse.Namespace) -> None:
     daemon_bin: str | None = None
     try:
         from head.peer_manager import resolve_daemon_binary
+
         daemon_bin = resolve_daemon_binary()
     except (ImportError, Exception):
         # Fallback: look for bundled binary
@@ -280,7 +289,9 @@ def _cmd_status(args: argparse.Namespace) -> None:
 
     # ── Claude CLI ──
     claude_result = subprocess.run(
-        ["which", "claude"], capture_output=True, text=True,
+        ["which", "claude"],
+        capture_output=True,
+        text=True,
     )
     if claude_result.returncode == 0:
         claude_path = claude_result.stdout.strip()
@@ -291,6 +302,7 @@ def _cmd_status(args: argparse.Namespace) -> None:
     # ── Peers ──
     try:
         from head.config_v2 import load_config_v2
+
         cfg_path = args.config
         if not cfg_path:
             # Try ~/.codecast/config.yaml first, then ./config.yaml
@@ -316,7 +328,8 @@ def _find_process(name: str) -> int | None:
     try:
         result = subprocess.run(
             ["pgrep", "-f", name],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if result.returncode == 0:
             # Return first PID (skip our own)
@@ -333,6 +346,7 @@ def _cmd_peers(args: argparse.Namespace) -> None:
     """List configured peers."""
     try:
         from head.config_v2 import load_config_v2
+
         cfg_path = args.config or str(Path.home() / ".codecast" / "config.yaml")
         cfg = load_config_v2(cfg_path)
         peers = getattr(cfg, "peers", []) or []
@@ -391,6 +405,7 @@ def _cmd_bot(args: argparse.Namespace) -> None:
     _HEAD_PID_FILE.write_text(str(os.getpid()))
     try:
         from head.main import cli_main
+
         cli_main()
     finally:
         _HEAD_PID_FILE.unlink(missing_ok=True)
@@ -413,6 +428,7 @@ def _webui_start(args: argparse.Namespace) -> None:
     config = None
     try:
         from head.config_v2 import load_config_v2
+
         cfg_path = args.config or str(Path.home() / ".codecast" / "config.yaml")
         config = load_config_v2(cfg_path)
     except Exception:

@@ -82,6 +82,7 @@ class CodecastApp(App):
     def _get_version() -> str:
         try:
             from head.__version__ import __version__
+
             return f"v{__version__}"
         except Exception:
             return ""

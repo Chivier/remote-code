@@ -177,13 +177,13 @@ class SSHManager:
         # Use a batch command to check multiple ports in one SSH round-trip
         scan_cmd = " ; ".join(
             f"curl -sf http://127.0.0.1:{p}/rpc "
-            f"-d '{{\"method\":\"health.check\"}}' "
+            f'-d \'{{"method":"health.check"}}\' '
             f"-H 'Content-Type: application/json' --max-time 1 "
             f"2>/dev/null && echo ' PORT={p}'"
             for p in range(base_port, base_port + 20)  # scan first 20 for speed
         )
         result = await conn.run(f"{{ {scan_cmd} ; }} 2>/dev/null || true")
-        stdout = (result.stdout or "")
+        stdout = result.stdout or ""
 
         for line in stdout.splitlines():
             if '"ok":true' in line or '"ok": true' in line:
@@ -211,8 +211,7 @@ class SSHManager:
         """Check if the daemon listening on `port` is owned by the current SSH user."""
         # Find PID listening on the port and check its owner
         result = await conn.run(
-            f"lsof -ti :{port} -sTCP:LISTEN 2>/dev/null "
-            f"| xargs -I{{}} ps -o user= -p {{}} 2>/dev/null || true"
+            f"lsof -ti :{port} -sTCP:LISTEN 2>/dev/null | xargs -I{{}} ps -o user= -p {{}} 2>/dev/null || true"
         )
         owner = (result.stdout or "").strip().splitlines()
         if not owner:
@@ -283,15 +282,11 @@ class SSHManager:
             if jump_password:
                 jump_kwargs["password"] = jump_password
             logger.info(f"Connecting to jump host {machine.proxy_jump} ({jump_machine.host})...")
-            jump_conn = await asyncio.wait_for(
-                asyncssh.connect(**jump_kwargs), timeout=timeout
-            )
+            jump_conn = await asyncio.wait_for(asyncssh.connect(**jump_kwargs), timeout=timeout)
             connect_kwargs["tunnel"] = jump_conn
 
         logger.info(f"Connecting to {machine.id} ({machine.host}:{machine.port})...")
-        conn = await asyncio.wait_for(
-            asyncssh.connect(**connect_kwargs), timeout=timeout
-        )
+        conn = await asyncio.wait_for(asyncssh.connect(**connect_kwargs), timeout=timeout)
         return conn
 
     async def ensure_tunnel(self, machine_id: str) -> int:

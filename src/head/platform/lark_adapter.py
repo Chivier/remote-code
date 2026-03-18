@@ -141,15 +141,14 @@ class LarkAdapter:
         for chunk in chunks:
             try:
                 post_content = markdown_to_lark_post(chunk)
-                body = CreateMessageRequestBody.builder() \
-                    .receive_id(chat_id) \
-                    .msg_type("post") \
-                    .content(json.dumps(post_content)) \
+                body = (
+                    CreateMessageRequestBody.builder()
+                    .receive_id(chat_id)
+                    .msg_type("post")
+                    .content(json.dumps(post_content))
                     .build()
-                request = CreateMessageRequest.builder() \
-                    .receive_id_type("chat_id") \
-                    .request_body(body) \
-                    .build()
+                )
+                request = CreateMessageRequest.builder().receive_id_type("chat_id").request_body(body).build()
 
                 response = self._client.im.v1.message.create(request)
                 if response.success():
@@ -177,14 +176,8 @@ class LarkAdapter:
 
         try:
             post_content = markdown_to_lark_post(text)
-            body = PatchMessageRequestBody.builder() \
-                .msg_type("post") \
-                .content(json.dumps(post_content)) \
-                .build()
-            request = PatchMessageRequest.builder() \
-                .message_id(handle.message_id) \
-                .request_body(body) \
-                .build()
+            body = PatchMessageRequestBody.builder().msg_type("post").content(json.dumps(post_content)).build()
+            request = PatchMessageRequest.builder().message_id(handle.message_id).request_body(body).build()
 
             response = self._client.im.v1.message.patch(request)
             if not response.success():
@@ -200,9 +193,7 @@ class LarkAdapter:
         from lark_oapi.api.im.v1 import DeleteMessageRequest
 
         try:
-            request = DeleteMessageRequest.builder() \
-                .message_id(handle.message_id) \
-                .build()
+            request = DeleteMessageRequest.builder().message_id(handle.message_id).build()
 
             response = self._client.im.v1.message.delete(request)
             if not response.success():
@@ -220,11 +211,13 @@ class LarkAdapter:
         from lark_oapi.api.im.v1 import GetMessageResourceRequest
 
         try:
-            request = GetMessageResourceRequest.builder() \
-                .message_id(attachment.platform_ref.get("message_id", "")) \
-                .file_key(attachment.platform_ref.get("file_key", "")) \
-                .type(attachment.platform_ref.get("type", "file")) \
+            request = (
+                GetMessageResourceRequest.builder()
+                .message_id(attachment.platform_ref.get("message_id", ""))
+                .file_key(attachment.platform_ref.get("file_key", ""))
+                .type(attachment.platform_ref.get("type", "file"))
                 .build()
+            )
 
             response = self._client.im.v1.message_resource.get(request)
             if response.success():
@@ -263,13 +256,8 @@ class LarkAdapter:
             if is_image:
                 # Upload as image
                 with open(path, "rb") as f:
-                    body = CreateImageRequestBody.builder() \
-                        .image_type("message") \
-                        .image(f) \
-                        .build()
-                    request = CreateImageRequest.builder() \
-                        .request_body(body) \
-                        .build()
+                    body = CreateImageRequestBody.builder().image_type("message").image(f).build()
+                    request = CreateImageRequest.builder().request_body(body).build()
                     response = self._client.im.v1.image.create(request)
 
                 if not response.success():
@@ -281,14 +269,8 @@ class LarkAdapter:
             else:
                 # Upload as file
                 with open(path, "rb") as f:
-                    body = CreateFileRequestBody.builder() \
-                        .file_type("stream") \
-                        .file_name(path.name) \
-                        .file(f) \
-                        .build()
-                    request = CreateFileRequest.builder() \
-                        .request_body(body) \
-                        .build()
+                    body = CreateFileRequestBody.builder().file_type("stream").file_name(path.name).file(f).build()
+                    request = CreateFileRequest.builder().request_body(body).build()
                     response = self._client.im.v1.file.create(request)
 
                 if not response.success():
@@ -299,15 +281,10 @@ class LarkAdapter:
                 msg_type = "file"
 
             # Send the file/image message
-            msg_body = CreateMessageRequestBody.builder() \
-                .receive_id(chat_id) \
-                .msg_type(msg_type) \
-                .content(content) \
-                .build()
-            msg_request = CreateMessageRequest.builder() \
-                .receive_id_type("chat_id") \
-                .request_body(msg_body) \
-                .build()
+            msg_body = (
+                CreateMessageRequestBody.builder().receive_id(chat_id).msg_type(msg_type).content(content).build()
+            )
+            msg_request = CreateMessageRequest.builder().receive_id_type("chat_id").request_body(msg_body).build()
 
             msg_response = self._client.im.v1.message.create(msg_request)
             if msg_response.success():
@@ -363,16 +340,20 @@ class LarkAdapter:
 
         logger.info("Starting Lark bot...")
 
-        self._client = lark.Client.builder() \
-            .app_id(self._config.app_id) \
-            .app_secret(self._config.app_secret) \
-            .log_level(lark.LogLevel.WARNING) \
+        self._client = (
+            lark.Client.builder()
+            .app_id(self._config.app_id)
+            .app_secret(self._config.app_secret)
+            .log_level(lark.LogLevel.WARNING)
             .build()
+        )
 
         # Set up event handler for incoming messages
-        event_handler = lark.EventDispatcherHandler.builder("", "") \
-            .register_p2_im_message_receive_v1(self._handle_message_event) \
+        event_handler = (
+            lark.EventDispatcherHandler.builder("", "")
+            .register_p2_im_message_receive_v1(self._handle_message_event)
             .build()
+        )
 
         self._ws_client = lark.ws.Client(
             self._config.app_id,

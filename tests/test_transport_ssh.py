@@ -126,9 +126,7 @@ class TestSSHTransportConnect(unittest.IsolatedAsyncioTestCase):
         assert call_kwargs["username"] == "testuser"
         assert call_kwargs["known_hosts"] is None
 
-        mock_conn.forward_local_port.assert_awaited_once_with(
-            "127.0.0.1", 19100, "127.0.0.1", 9100
-        )
+        mock_conn.forward_local_port.assert_awaited_once_with("127.0.0.1", 19100, "127.0.0.1", 9100)
         assert t.is_alive() is True
         assert t.connection is mock_conn
 
@@ -172,9 +170,7 @@ class TestSSHTransportConnect(unittest.IsolatedAsyncioTestCase):
     async def test_connect_with_proxy_jump(self, mock_asyncssh):
         mock_jump_conn = AsyncMock()
         mock_target_conn = AsyncMock()
-        mock_asyncssh.connect = AsyncMock(
-            side_effect=[mock_jump_conn, mock_target_conn]
-        )
+        mock_asyncssh.connect = AsyncMock(side_effect=[mock_jump_conn, mock_target_conn])
         mock_target_conn.forward_local_port = AsyncMock(return_value=MagicMock())
 
         peer_configs = {

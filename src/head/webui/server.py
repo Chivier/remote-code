@@ -129,12 +129,14 @@ def _get_peers(config: Any) -> list[dict[str, Any]]:
         return []
     result = []
     for pid, peer in peers_dict.items():
-        result.append({
-            "id": pid,
-            "transport": getattr(peer, "transport", "ssh"),
-            "host": getattr(peer, "ssh_host", None) or getattr(peer, "address", None) or "-",
-            "daemon_port": getattr(peer, "daemon_port", 9100),
-        })
+        result.append(
+            {
+                "id": pid,
+                "transport": getattr(peer, "transport", "ssh"),
+                "host": getattr(peer, "ssh_host", None) or getattr(peer, "address", None) or "-",
+                "daemon_port": getattr(peer, "daemon_port", 9100),
+            }
+        )
     return result
 
 

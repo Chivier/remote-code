@@ -51,9 +51,7 @@ class StatusPanel(Static):
         daemon_pid = _find_process("codecast-daemon")
         if port is not None and _daemon_healthy(port):
             pid_part = f" (pid={daemon_pid})" if daemon_pid else ""
-            lines.append(
-                f"Daemon: [green]●[/green] running on port {port}{pid_part}"
-            )
+            lines.append(f"Daemon: [green]●[/green] running on port {port}{pid_part}")
         else:
             lines.append("Daemon: [dim]○[/dim] not running")
 
@@ -61,9 +59,7 @@ class StatusPanel(Static):
         webui_pid = _read_pid_file(_WEBUI_PID_FILE)
         webui_port = _read_pid_file(_WEBUI_PORT_FILE)
         if webui_pid is not None and _pid_alive(webui_pid):
-            lines.append(
-                f"WebUI:  [green]●[/green] running on http://127.0.0.1:{webui_port} (pid={webui_pid})"
-            )
+            lines.append(f"WebUI:  [green]●[/green] running on http://127.0.0.1:{webui_port} (pid={webui_pid})")
         else:
             lines.append("WebUI:  [dim]○[/dim] not running")
 

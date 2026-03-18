@@ -61,7 +61,5 @@ class TestHTTPTransport:
         assert t._verify_tls is False
 
     def test_verify_tls_explicit_true(self):
-        t = HTTPTransport(
-            peer_id="gpu", address="10.0.1.5:9100", token="tok", verify_tls=True
-        )
+        t = HTTPTransport(peer_id="gpu", address="10.0.1.5:9100", token="tok", verify_tls=True)
         assert t._verify_tls is True

@@ -246,8 +246,7 @@ class BotEngine:
         if len(args) < 2:
             await self.send_message(
                 channel_id,
-                "Usage: `/start <peer> <remote_path>`\n"
-                "Example: `/start gpu-1 ~/project` (path on the remote machine)",
+                "Usage: `/start <peer> <remote_path>`\nExample: `/start gpu-1 ~/project` (path on the remote machine)",
             )
             return
 
@@ -818,8 +817,9 @@ class BotEngine:
                 # Try to extract the jump host from ProxyCommand
                 # Common patterns: "ssh ... jumphost -W %h:%p" or "sshpass ... ssh ... jumphost -W %h:%p"
                 import re
+
                 # Match the last word before -W (the jump host in ProxyCommand)
-                pc_match = re.search(r'ssh\s+(?:-\S+\s+)*(\S+)\s+-W', match.proxy_command)
+                pc_match = re.search(r"ssh\s+(?:-\S+\s+)*(\S+)\s+-W", match.proxy_command)
                 if pc_match:
                     effective_proxy = pc_match.group(1)
                     logger.info(f"Extracted proxy '{effective_proxy}' from ProxyCommand: {match.proxy_command}")
@@ -958,7 +958,8 @@ class BotEngine:
             effective_proxy = entry.proxy_jump
             if not effective_proxy and entry.proxy_command:
                 import re
-                pc_match = re.search(r'ssh\s+(?:-\S+\s+)*(\S+)\s+-W', entry.proxy_command)
+
+                pc_match = re.search(r"ssh\s+(?:-\S+\s+)*(\S+)\s+-W", entry.proxy_command)
                 if pc_match:
                     effective_proxy = pc_match.group(1)
             if effective_proxy and effective_proxy in self.config.machines:
@@ -1255,9 +1256,7 @@ After `/start` or `/resume`, send any message to interact with Claude."""
             )
         return text
 
-    async def _detect_and_forward_files(
-        self, channel_id: str, machine_id: str, text: str
-    ) -> None:
+    async def _detect_and_forward_files(self, channel_id: str, machine_id: str, text: str) -> None:
         """Detect file paths in text and forward matching files."""
         if not self.file_forward:
             return
@@ -1270,22 +1269,17 @@ After `/start` or `/resume`, send any message to interact with Claude."""
             if decision.action == "auto_send":
                 local_path = None
                 try:
-                    local_path = await self.ssh.download_file(
-                        machine_id, path, self.file_forward.config.download_dir
-                    )
+                    local_path = await self.ssh.download_file(machine_id, path, self.file_forward.config.download_dir)
                     actual_size = local_path.stat().st_size
                     # Authoritative size check with actual file
                     decision = self.file_forward.should_forward(path, actual_size)
                     if decision.action == "auto_send":
                         filename = Path(path).name
-                        await self.adapter.send_file(
-                            channel_id, local_path, caption=f"{filename}"
-                        )
+                        await self.adapter.send_file(channel_id, local_path, caption=f"{filename}")
                     else:
                         await self.send_message(
                             channel_id,
-                            f"File `{Path(path).name}` ({actual_size // 1024}KB) "
-                            f"exceeds size limit. {decision.reason}",
+                            f"File `{Path(path).name}` ({actual_size // 1024}KB) exceeds size limit. {decision.reason}",
                         )
                 except Exception as e:
                     logger.warning(f"Failed to forward file {path}: {e}")
@@ -1422,9 +1416,7 @@ After `/start` or `/resume`, send any message to interact with Claude."""
 
                         # Detect and forward files from completed text
                         if self.file_forward:
-                            await self._detect_and_forward_files(
-                                channel_id, session.machine_id, content
-                            )
+                            await self._detect_and_forward_files(channel_id, session.machine_id, content)
 
                 elif event_type == "result":
                     sdk_session_id = event.get("session_id")

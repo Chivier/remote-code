@@ -23,12 +23,8 @@ pub fn ensure_tls_cert(cert_path: &Path, key_path: &Path) -> std::io::Result<()>
 
     // Generate self-signed certificate for localhost and common names
     let subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
-    let certified_key = generate_simple_self_signed(subject_alt_names).map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Failed to generate TLS certificate: {}", e),
-        )
-    })?;
+    let certified_key = generate_simple_self_signed(subject_alt_names)
+        .map_err(|e| std::io::Error::other(format!("Failed to generate TLS certificate: {}", e)))?;
 
     let cert_pem = certified_key.cert.pem();
     let key_pem = certified_key.key_pair.serialize_pem();
