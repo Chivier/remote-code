@@ -10,14 +10,15 @@ from pathlib import Path
 from textual.widgets import DataTable, Static
 
 from head.cli import (
+    _DAEMON_PID_FILE,
     _HEAD_PID_FILE,
     _WEBUI_PID_FILE,
     _WEBUI_PORT_FILE,
     _daemon_healthy,
+    _find_process,
     _pid_alive,
     _read_pid_file,
     _read_port_file,
-    _find_process,
 )
 
 
@@ -48,7 +49,7 @@ class StatusPanel(Static):
 
         # Daemon
         port = _read_port_file()
-        daemon_pid = _find_process("codecast-daemon")
+        daemon_pid = _read_pid_file(_DAEMON_PID_FILE) or _find_process("codecast-daemon")
         if port is not None and _daemon_healthy(port):
             pid_part = f" (pid={daemon_pid})" if daemon_pid else ""
             lines.append(f"Daemon: [green]●[/green] running on port {port}{pid_part}")

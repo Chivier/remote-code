@@ -52,11 +52,24 @@ class TestCLIParsing:
         assert args.token_action == "revoke"
         assert args.token_value == "ccast_abc"
 
-    def test_bot_start(self):
+    def test_head_start(self):
+        from head.cli import parse_args
+
+        args = parse_args(["head", "start"])
+        assert args.command == "head"
+
+    def test_bot_alias(self):
         from head.cli import parse_args
 
         args = parse_args(["bot", "start"])
         assert args.command == "bot"
+
+    def test_head_with_yes_flag(self):
+        from head.cli import parse_args
+
+        args = parse_args(["head", "--yes"])
+        assert args.command == "head"
+        assert args.yes is True
 
     def test_webui_command(self):
         from head.cli import parse_args

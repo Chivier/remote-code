@@ -8,7 +8,13 @@ import pytest
 import yaml
 
 from head.tui.app import CodecastApp, CODECAST_THEME
-from head.tui.screens import SetupWizardScreen, DashboardScreen
+from head.tui.screens import (
+    DashboardScreen,
+    SessionsScreen,
+    SetupWizardScreen,
+    StartHeadScreen,
+    StartWebUIScreen,
+)
 from head.tui.widgets import StatusPanel, PeerTable
 
 
@@ -88,7 +94,7 @@ async def test_dashboard_keybindings(tmp_path):
         assert isinstance(app.screen, DashboardScreen)
         keys = {b[0] if isinstance(b, tuple) else b.key for b in app.screen.BINDINGS}
         assert "d" in keys
-        assert "b" in keys
+        assert "h" in keys
         assert "w" in keys
         assert "a" in keys
         assert "s" in keys
@@ -196,3 +202,310 @@ async def test_dashboard_has_status_panel_container(tmp_path):
         await pilot.pause()
         assert app.screen.query_one("#status_panel_container") is not None
         assert app.screen.query_one("#peer_table_container") is not None
+
+
+# ---------------------------------------------------------------------------
+# StartHeadScreen tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_head_screen_shows_status(tmp_path):
+    """StartHeadScreen should show head node status and config summary."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({"default_mode": "auto"}))
+    app = CodecastApp(config_path=str(config_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Push StartHeadScreen from dashboard
+        app.push_screen(StartHeadScreen(str(config_path)))
+        await pilot.pause()
+        assert isinstance(app.screen, StartHeadScreen)
+        status = app.screen.query_one("#head_status")
+        text = _get_static_text(status)
+        assert "not running" in text
+        assert "Config:" in text
+
+
+@pytest.mark.asyncio
+async def test_start_head_screen_menu_options(tmp_path):
+    """StartHeadScreen should show config options and back."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({"default_mode": "auto"}))
+    app = CodecastApp(config_path=str(config_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(StartHeadScreen(str(config_path)))
+        await pilot.pause()
+        menu = app.screen.query_one("#head_menu")
+        option_ids = [opt.id for opt in menu._options]
+        assert "config_discord" in option_ids
+        assert "config_telegram" in option_ids
+        assert "back" in option_ids
+
+
+@pytest.mark.asyncio
+async def test_start_head_screen_shows_bots_when_configured(tmp_path):
+    """StartHeadScreen should list configured bots."""
+    config_path = tmp_path / "config.yaml"
+    cfg = {
+        "default_mode": "auto",
+        "bot": {"discord": {"token": "fake-token-123"}},
+    }
+    config_path.write_text(yaml.dump(cfg))
+    app = CodecastApp(config_path=str(config_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(StartHeadScreen(str(config_path)))
+        await pilot.pause()
+        status = app.screen.query_one("#head_status")
+        text = _get_static_text(status)
+        assert "Discord" in text
+        # Should have start option when bots are configured
+        menu = app.screen.query_one("#head_menu")
+        option_ids = [opt.id for opt in menu._options]
+        assert "start" in option_ids
+
+
+@pytest.mark.asyncio
+async def test_start_head_screen_escape_goes_back(tmp_path):
+    """Pressing escape on StartHeadScreen should return to dashboard."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({"default_mode": "auto"}))
+    app = CodecastApp(config_path=str(config_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(StartHeadScreen(str(config_path)))
+        await pilot.pause()
+        assert isinstance(app.screen, StartHeadScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, DashboardScreen)
+
+
+# ---------------------------------------------------------------------------
+# StartWebUIScreen tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_webui_screen_shows_status(tmp_path):
+    """StartWebUIScreen should show WebUI status."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({"default_mode": "auto"}))
+    app = CodecastApp(config_path=str(config_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(StartWebUIScreen(str(config_path)))
+        await pilot.pause()
+        assert isinstance(app.screen, StartWebUIScreen)
+        status = app.screen.query_one("#webui_status")
+        text = _get_static_text(status)
+        assert "not running" in text
+
+
+@pytest.mark.asyncio
+async def test_start_webui_screen_menu_options(tmp_path):
+    """StartWebUIScreen should have start and back options when not running."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({"default_mode": "auto"}))
+    app = CodecastApp(config_path=str(config_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(StartWebUIScreen(str(config_path)))
+        await pilot.pause()
+        menu = app.screen.query_one("#webui_menu")
+        option_ids = [opt.id for opt in menu._options]
+        assert "start" in option_ids
+        assert "back" in option_ids
+
+
+@pytest.mark.asyncio
+async def test_start_webui_screen_escape_goes_back(tmp_path):
+    """Pressing escape on StartWebUIScreen should return to dashboard."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({"default_mode": "auto"}))
+    app = CodecastApp(config_path=str(config_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(StartWebUIScreen(str(config_path)))
+        await pilot.pause()
+        assert isinstance(app.screen, StartWebUIScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, DashboardScreen)
+
+
+# ---------------------------------------------------------------------------
+# SessionsScreen tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sessions_screen_shows_table(tmp_path):
+    """SessionsScreen should display a DataTable with session columns."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({"default_mode": "auto"}))
+    app = CodecastApp(config_path=str(config_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(SessionsScreen(str(config_path)))
+        await pilot.pause()
+        assert isinstance(app.screen, SessionsScreen)
+        table = app.screen.query_one("#sessions_table")
+        assert table is not None
+        # Should have the expected columns
+        col_labels = [col.label.plain for col in table.columns.values()]
+        assert "Name" in col_labels
+        assert "Machine" in col_labels
+        assert "Status" in col_labels
+
+
+@pytest.mark.asyncio
+async def test_sessions_screen_no_sessions(tmp_path):
+    """SessionsScreen should show 'no sessions' when DB doesn't exist."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({"default_mode": "auto"}))
+    app = CodecastApp(config_path=str(config_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = SessionsScreen(str(config_path))
+        screen._load_sessions = lambda: []  # No sessions
+        app.push_screen(screen)
+        await pilot.pause()
+        info = app.screen.query_one("#sessions_info")
+        text = _get_static_text(info)
+        assert "No sessions found" in text
+
+
+@pytest.mark.asyncio
+async def test_sessions_screen_escape_goes_back(tmp_path):
+    """Pressing escape on SessionsScreen should return to dashboard."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({"default_mode": "auto"}))
+    app = CodecastApp(config_path=str(config_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.push_screen(SessionsScreen(str(config_path)))
+        await pilot.pause()
+        assert isinstance(app.screen, SessionsScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, DashboardScreen)
+
+
+@pytest.mark.asyncio
+async def test_sessions_screen_with_sessions(tmp_path):
+    """SessionsScreen should show sessions from a pre-populated DB."""
+    import sqlite3
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({"default_mode": "auto"}))
+
+    # Create a fake sessions database
+    db_path = tmp_path / "sessions.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE sessions (
+            channel_id TEXT PRIMARY KEY,
+            machine_id TEXT NOT NULL,
+            path TEXT NOT NULL,
+            daemon_session_id TEXT NOT NULL,
+            sdk_session_id TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            mode TEXT NOT NULL DEFAULT 'auto',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            name TEXT,
+            tool_display TEXT DEFAULT 'append'
+        )
+    """)
+    conn.execute(
+        "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "discord:123",
+            "server1",
+            "/home/user/project",
+            "uuid-1234",
+            None,
+            "active",
+            "auto",
+            "2026-03-18T00:00:00",
+            "2026-03-18T00:00:00",
+            "bright-falcon",
+            "append",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    # Patch _load_sessions to use our temp DB
+    app = CodecastApp(config_path=str(config_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = SessionsScreen(str(config_path))
+        # Monkey-patch to use our DB
+        original_load = screen._load_sessions
+
+        def patched_load():
+            from head.session_router import SessionRouter
+
+            router = SessionRouter(str(db_path))
+            return router.list_sessions()
+
+        screen._load_sessions = patched_load
+        app.push_screen(screen)
+        await pilot.pause()
+
+        table = app.screen.query_one("#sessions_table")
+        assert table.row_count == 1
+        info = app.screen.query_one("#sessions_info")
+        text = _get_static_text(info)
+        assert "1 session(s)" in text
+
+
+# ---------------------------------------------------------------------------
+# Dashboard action routing tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dashboard_h_key_opens_head_screen(tmp_path):
+    """Pressing 'h' on dashboard should open StartHeadScreen."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({"default_mode": "auto"}))
+    app = CodecastApp(config_path=str(config_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, DashboardScreen)
+        await pilot.press("h")
+        await pilot.pause()
+        assert isinstance(app.screen, StartHeadScreen)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_w_key_opens_webui_screen(tmp_path):
+    """Pressing 'w' on dashboard should open StartWebUIScreen."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({"default_mode": "auto"}))
+    app = CodecastApp(config_path=str(config_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, DashboardScreen)
+        await pilot.press("w")
+        await pilot.pause()
+        assert isinstance(app.screen, StartWebUIScreen)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_s_key_opens_sessions_screen(tmp_path):
+    """Pressing 's' on dashboard should open SessionsScreen."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({"default_mode": "auto"}))
+    app = CodecastApp(config_path=str(config_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, DashboardScreen)
+        await pilot.press("s")
+        await pilot.pause()
+        assert isinstance(app.screen, SessionsScreen)

@@ -10,7 +10,7 @@ Provides subcommand dispatch via argparse:
     codecast peers        -> list peers
     codecast sessions     -> list sessions
     codecast token ...    -> generate/list/revoke tokens
-    codecast bot start    -> start v1 bot (Discord/Telegram)
+    codecast head start   -> start head node (Discord/Telegram/Lark)
     codecast webui        -> start web UI
 """
 
@@ -76,9 +76,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     tok_revoke = token_sub.add_parser("revoke", help="Revoke a token")
     tok_revoke.add_argument("token_value", help="Token string to revoke")
 
-    # bot -------------------------------------------------------------
-    sub_bot = subparsers.add_parser("bot", help="Run the v1 chat bot")
-    sub_bot.add_argument("bot_action", nargs="?", default="start", help="Bot action (default: start)")
+    # head (formerly "bot") --------------------------------------------
+    sub_head = subparsers.add_parser("head", help="Start the head node (Discord/Telegram/Lark)")
+    sub_head.add_argument("head_action", nargs="?", default="start", help="Action (default: start)")
+    sub_head.add_argument("--config", "-c", dest="config", default=None, help="Path to config YAML file")
+    sub_head.add_argument("--yes", "-y", action="store_true", default=False, help="Skip confirmation prompt")
+
+    # Keep "bot" as a hidden alias for backwards compatibility
+    sub_bot = subparsers.add_parser("bot")
+    sub_bot.add_argument("head_action", nargs="?", default="start")
+    sub_bot.add_argument("--config", "-c", dest="config", default=None)
+    sub_bot.add_argument("--yes", "-y", action="store_true", default=False)
 
     # webui -----------------------------------------------------------
     sub_webui = subparsers.add_parser("webui", help="Start/stop the web UI")
@@ -101,6 +109,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 _CODECAST_DIR = Path.home() / ".codecast"
 _PORT_FILE = _CODECAST_DIR / "daemon.port"
+_DAEMON_PID_FILE = _CODECAST_DIR / "daemon.pid"
 _HEAD_PID_FILE = _CODECAST_DIR / "head.pid"
 _WEBUI_PID_FILE = _CODECAST_DIR / "webui.pid"
 _WEBUI_PORT_FILE = _CODECAST_DIR / "webui.port"
@@ -206,36 +215,40 @@ def _cmd_start(args: argparse.Namespace) -> None:
         cmd.extend(["--config", config_path])
 
     print(f"Starting daemon: {daemon_bin}")
+    _CODECAST_DIR.mkdir(parents=True, exist_ok=True)
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+    _DAEMON_PID_FILE.write_text(str(proc.pid))
     print(f"Daemon started (pid={proc.pid})")
 
 
 def _cmd_stop(args: argparse.Namespace) -> None:
     """Stop the running daemon."""
-    port = _read_port_file()
-    if port is not None and _daemon_healthy(port):
-        # Try graceful shutdown via signal
+    stopped = False
+
+    # Try PID file first (most reliable)
+    daemon_pid = _read_pid_file(_DAEMON_PID_FILE)
+    if daemon_pid is not None and _pid_alive(daemon_pid):
         try:
-            subprocess.run(["pkill", "-f", "codecast-daemon"], check=False)
-        except FileNotFoundError:
+            os.kill(daemon_pid, signal.SIGTERM)
+            stopped = True
+        except ProcessLookupError:
             pass
-    else:
-        # Attempt pkill anyway
+
+    # Fallback to pkill if PID file didn't work
+    if not stopped:
         try:
             subprocess.run(["pkill", "-f", "codecast-daemon"], check=False)
         except FileNotFoundError:
             pass
 
-    # Remove port file
-    try:
-        _PORT_FILE.unlink(missing_ok=True)
-    except Exception:
-        pass
+    # Remove PID and port files
+    _DAEMON_PID_FILE.unlink(missing_ok=True)
+    _PORT_FILE.unlink(missing_ok=True)
     print("Daemon stopped.")
 
 
@@ -270,7 +283,7 @@ def _cmd_status(args: argparse.Namespace) -> None:
 
     # ── Daemon ──
     port = _read_port_file()
-    daemon_pid = _find_process("codecast-daemon")
+    daemon_pid = _read_pid_file(_DAEMON_PID_FILE) or _find_process("codecast-daemon")
     if port is not None and _daemon_healthy(port):
         pid_part = f" (pid={daemon_pid})" if daemon_pid else ""
         print(f"Daemon:     running on port {port}{pid_part}")
@@ -364,8 +377,37 @@ def _cmd_peers(args: argparse.Namespace) -> None:
 
 
 def _cmd_sessions(args: argparse.Namespace) -> None:
-    """List active sessions (placeholder)."""
-    print("Sessions listing is not yet implemented.")
+    """List sessions from the SessionRouter database."""
+    from head.session_router import SessionRouter
+
+    # Try common DB locations
+    candidates = [
+        Path.home() / ".codecast" / "sessions.db",
+        Path(__file__).parent / "sessions.db",
+    ]
+    db_path = None
+    for candidate in candidates:
+        if candidate.exists():
+            db_path = candidate
+            break
+
+    if db_path is None:
+        print("No sessions database found.")
+        return
+
+    router = SessionRouter(str(db_path))
+    sessions = router.list_sessions()
+    if not sessions:
+        print("No sessions.")
+        return
+
+    # Print table header
+    print(f"{'Name':<20} {'Machine':<15} {'Path':<30} {'Mode':<6} {'Status':<10}")
+    print("-" * 85)
+    for s in sessions:
+        name = s.name or s.daemon_session_id[:8]
+        path = s.path if len(s.path) <= 30 else "..." + s.path[-27:]
+        print(f"{name:<20} {s.machine_id:<15} {path:<30} {s.mode:<6} {s.status:<10}")
 
 
 def _cmd_token(args: argparse.Namespace) -> None:
@@ -399,16 +441,67 @@ def _cmd_token(args: argparse.Namespace) -> None:
         print("Usage: codecast token {generate|list|revoke}")
 
 
-def _cmd_bot(args: argparse.Namespace) -> None:
-    """Delegate to the v1 bot entry point."""
-    _CODECAST_DIR.mkdir(parents=True, exist_ok=True)
-    _HEAD_PID_FILE.write_text(str(os.getpid()))
-    try:
-        from head.main import cli_main
+def _cmd_head(args: argparse.Namespace) -> None:
+    """Start the head node with config discovery and confirmation."""
+    # Resolve config path: --config flag > ~/.codecast/config.yaml > ./config.yaml
+    cfg_path = getattr(args, "config", None)
+    if not cfg_path:
+        for candidate in [
+            str(Path.home() / ".codecast" / "config.yaml"),
+            "config.yaml",
+        ]:
+            if Path(candidate).exists():
+                cfg_path = candidate
+                break
 
-        cli_main()
-    finally:
-        _HEAD_PID_FILE.unlink(missing_ok=True)
+    if not cfg_path or not Path(cfg_path).exists():
+        print("No config file found.", file=sys.stderr)
+        print("Run 'codecast' TUI to set up, or specify --config.", file=sys.stderr)
+        sys.exit(1)
+
+    # Load config and show summary
+    try:
+        from head.config_v2 import load_config_v2
+
+        cfg = load_config_v2(cfg_path)
+    except Exception as exc:
+        print(f"Failed to load config: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    bots_configured = []
+    if cfg.bot:
+        if cfg.bot.discord and getattr(cfg.bot.discord, "token", None):
+            bots_configured.append("Discord")
+        if cfg.bot.telegram and getattr(cfg.bot.telegram, "token", None):
+            bots_configured.append("Telegram")
+        if cfg.bot.lark and getattr(cfg.bot.lark, "app_id", None):
+            bots_configured.append("Lark")
+
+    if not bots_configured:
+        print("No bot tokens configured.", file=sys.stderr)
+        print("Run 'codecast' TUI to set up Discord/Telegram/Lark tokens.", file=sys.stderr)
+        sys.exit(1)
+
+    peers = getattr(cfg, "peers", {}) or {}
+    print(f"Config:  {cfg_path}")
+    print(f"Bots:    {', '.join(bots_configured)}")
+    print(f"Peers:   {len(peers)} configured")
+
+    # Prompt for confirmation unless --yes
+    skip_confirm = getattr(args, "yes", False)
+    if not skip_confirm:
+        try:
+            answer = input("Start head with this config? [Y/n] ").strip().lower()
+            if answer and answer not in ("y", "yes"):
+                print("Aborted.")
+                return
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            return
+
+    from head.main import cli_main
+
+    cli_main(cfg_path)
 
 
 def _cmd_webui(args: argparse.Namespace) -> None:
@@ -532,7 +625,8 @@ _COMMANDS: dict[str, callable] = {
     "peers": _cmd_peers,
     "sessions": _cmd_sessions,
     "token": _cmd_token,
-    "bot": _cmd_bot,
+    "head": _cmd_head,
+    "bot": _cmd_head,
     "webui": _cmd_webui,
 }
 

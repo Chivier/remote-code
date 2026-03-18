@@ -74,6 +74,14 @@ def _migrate_from_old_path() -> None:
         logger.warning(f"Both {old_remote_claude} and {new_dir} exist; skipping migration")
 
 
+def _write_head_pid() -> Path:
+    """Write the current PID to ~/.codecast/head.pid and return the path."""
+    pid_file = Path.home() / ".codecast" / "head.pid"
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(str(os.getpid()))
+    return pid_file
+
+
 async def main(config_path: str = "") -> None:
     """Main entry point."""
     _migrate_from_old_path()
@@ -169,8 +177,12 @@ async def main(config_path: str = "") -> None:
             logger.error(f"Failed to initialize Lark bot: {e}")
 
     if not adapters:
-        logger.error("No bots configured. Set discord and/or telegram tokens in config.yaml")
+        logger.error("No bots configured. Run 'codecast' TUI to set up tokens.")
         sys.exit(1)
+
+    # Write PID file so status/TUI can detect running head
+    head_pid_file = _write_head_pid()
+    logger.info(f"Head PID file: {head_pid_file} (pid={os.getpid()})")
 
     # Graceful shutdown handler
     shutdown_event = asyncio.Event()
@@ -229,12 +241,14 @@ async def main(config_path: str = "") -> None:
                 except (asyncio.CancelledError, Exception):
                     pass
 
+        # Remove PID file
+        head_pid_file.unlink(missing_ok=True)
         logger.info("Codecast stopped")
 
 
-def cli_main() -> None:
+def cli_main(config_path: str = "") -> None:
     """Entry point for the `codecast` console script."""
-    config_file = sys.argv[1] if len(sys.argv) > 1 else ""
+    config_file = config_path or (sys.argv[1] if len(sys.argv) > 1 else "")
     global _startup_config_path
     _startup_config_path = config_file
     asyncio.run(main(config_file))

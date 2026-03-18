@@ -62,6 +62,20 @@ class CodecastApp(App):
         height: auto;
         max-height: 14;
     }
+    #head_container, #webui_container, #sessions_container {
+        padding: 1 2;
+    }
+    #head_status, #webui_status {
+        margin-bottom: 1;
+    }
+    #sessions_table {
+        height: auto;
+        max-height: 16;
+        margin-bottom: 1;
+    }
+    #sessions_info {
+        margin-bottom: 1;
+    }
     """
 
     def __init__(self, config_path: str | None = None) -> None:

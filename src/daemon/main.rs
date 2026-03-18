@@ -135,6 +135,14 @@ async fn main() {
         // Destroy all sessions
         state_for_shutdown.session_pool.destroy_all().await;
         info!("[Daemon] All sessions destroyed");
+
+        // Clean up port file
+        if let Some(home) = dirs::home_dir() {
+            let port_file = home.join(".codecast").join("daemon.port");
+            if std::fs::remove_file(&port_file).is_ok() {
+                info!("[Daemon] Removed port file: {}", port_file.display());
+            }
+        }
     };
 
     if state.config.requires_auth() {
@@ -171,7 +179,17 @@ async fn main() {
 
         info!("[Daemon] Serving HTTPS on {}", addr);
 
+        let handle = axum_server::Handle::new();
+        let handle_for_shutdown = handle.clone();
+
+        // Spawn a task that triggers graceful shutdown when signal is received
+        tokio::spawn(async move {
+            shutdown_signal.await;
+            handle_for_shutdown.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
+        });
+
         axum_server::bind_rustls(addr, tls_config)
+            .handle(handle)
             .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await
             .unwrap();
