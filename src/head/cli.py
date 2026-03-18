@@ -474,7 +474,7 @@ def _cmd_head(args: argparse.Namespace) -> None:
             bots_configured.append("Discord")
         if cfg.bot.telegram and getattr(cfg.bot.telegram, "token", None):
             bots_configured.append("Telegram")
-        if cfg.bot.lark and getattr(cfg.bot.lark, "app_id", None):
+        if getattr(cfg.bot, "lark", None) and getattr(cfg.bot.lark, "app_id", None):
             bots_configured.append("Lark")
 
     if not bots_configured:
