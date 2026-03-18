@@ -321,6 +321,7 @@ class TelegramAdapter:
             "help",
             "add_machine",
             "remove_machine",
+            "rm_session",
             "update",
             "restart",
         ]
@@ -467,6 +468,7 @@ class TelegramAdapter:
         # (Telegram doesn't support hyphens in command names)
         text = text.replace("/add_machine", "/add-machine")
         text = text.replace("/remove_machine", "/remove-machine")
+        text = text.replace("/rm_session", "/rm-session")
 
         if self._on_input:
             await self._on_input(channel_id, text, user.id, None)

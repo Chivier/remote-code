@@ -881,6 +881,34 @@ class DiscordAdapter:
             machines = [mid for mid in self.config.machines if mid not in jump_hosts and current.lower() in mid.lower()]
             return [app_commands.Choice(name=m, value=m) for m in machines][:25]
 
+        # ------------------------------------------------------------------ /rm-session
+        @tree.command(name="rm-session", description="Destroy a specific session by name or ID")
+        @app_commands.describe(session="Session name or ID")
+        async def slash_rm_session(interaction: discord.Interaction, session: str) -> None:
+            await interaction.response.defer()
+            channel_id = self._defer_and_register(interaction)
+            if self._on_input:
+                try:
+                    await self._on_input(channel_id, f"/rm-session {session}", interaction.user.id, None)
+                except Exception as e:
+                    await self.send_message(channel_id, format_error(str(e)))
+
+        @slash_rm_session.autocomplete("session")
+        async def rm_session_autocomplete(
+            interaction: discord.Interaction, current: str
+        ) -> list[app_commands.Choice[str]]:
+            router = self._engine.router if self._engine else None
+            sessions = router.list_sessions() if router else []
+            choices = []
+            for s in sessions:
+                if s.status in ("active", "detached"):
+                    label = s.name or s.daemon_session_id[:8]
+                    value = s.name or s.daemon_session_id
+                    display = f"{label} ({s.machine_id}:{s.path})"
+                    if current.lower() in display.lower():
+                        choices.append(app_commands.Choice(name=display[:100], value=value))
+            return choices[:25]
+
         # ------------------------------------------------------------------ /mode
         @tree.command(name="mode", description="Switch Claude permission mode")
         @app_commands.describe(mode="Permission mode")

@@ -187,6 +187,8 @@ class BotEngine:
                 await self.cmd_exit(channel_id)
             elif cmd in ("/rm", "/remove", "/destroy"):
                 await self.cmd_rm(channel_id, args)
+            elif cmd in ("/rm-session", "/rmsession", "/remove-session", "/removesession"):
+                await self.cmd_rm_session(channel_id, args)
             elif cmd == "/mode":
                 await self.cmd_mode(channel_id, args)
             elif cmd == "/status":
@@ -408,6 +410,34 @@ class BotEngine:
         await self.send_message(
             channel_id,
             f"🗑\ufe0f Destroyed {len(sessions)} session(s) on **{machine_id}**:`{path}`",
+        )
+
+    async def cmd_rm_session(self, channel_id: str, args: list[str]) -> None:
+        """/rm-session <name_or_id> - Destroy a specific session by name or ID."""
+        if not args:
+            await self.send_message(channel_id, "Usage: `/rm-session <name_or_id>`")
+            return
+
+        identifier = args[0]
+        session = self.router.find_session_by_name_or_id(identifier)
+
+        if not session:
+            await self.send_message(channel_id, f"Session `{identifier}` not found.")
+            return
+
+        name_hint = session.name or session.daemon_session_id
+
+        if session.status in ("active", "detached"):
+            try:
+                local_port = await self.ssh.ensure_tunnel(session.machine_id)
+                await self.daemon.destroy_session(local_port, session.daemon_session_id)
+            except Exception as e:
+                logger.warning(f"Failed to destroy daemon session {name_hint}: {e}")
+            self.router.destroy(session.channel_id)
+
+        await self.send_message(
+            channel_id,
+            f"🗑\ufe0f Destroyed session **{name_hint}** on **{session.machine_id}**:`{session.path}`",
         )
 
     async def cmd_mode(self, channel_id: str, args: list[str]) -> None:
@@ -1148,7 +1178,8 @@ class BotEngine:
 `/ls machine` - List all machines/peers
 `/ls session [machine]` - List sessions
 `/exit` - Detach from current session
-`/rm <peer> <path>` - Destroy a session
+`/rm <peer> <path>` - Destroy session(s) by machine and path
+`/rm-session <name_or_id>` - Destroy a specific session by name or ID
 `/mode <auto|code|plan|ask>` - Switch permission mode
 `/rename <new_name>` - Rename current session
 `/status` - Show current session info
