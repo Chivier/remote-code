@@ -303,8 +303,22 @@ class SSHManager:
         stdout = result.stdout.strip() if result.stdout else ""
 
         if stdout:
-            logger.info(f"Daemon already running on {machine_id} (PID: {stdout})")
-            return
+            # Verify the running daemon is actually responsive
+            check_port = await self._read_daemon_port_remote(conn, machine.daemon_port)
+            health_result = await conn.run(
+                f"curl -sf http://127.0.0.1:{check_port}/rpc "
+                f'-d \'{{"method":"health.check"}}\' '
+                f"-H 'Content-Type: application/json' 2>/dev/null || true"
+            )
+            health_out = health_result.stdout.strip() if health_result.stdout else ""
+            if '"ok":true' in health_out or '"ok": true' in health_out:
+                logger.info(f"Daemon already running on {machine_id} (PID: {stdout})")
+                return
+
+            # Daemon process exists but is unresponsive — kill and restart
+            logger.warning(f"Daemon on {machine_id} (PID: {stdout}) is unresponsive, restarting...")
+            await conn.run(f"kill -9 {stdout.splitlines()[0]} 2>/dev/null || true")
+            await asyncio.sleep(1)
 
         logger.info(f"Daemon not running on {machine_id}, starting...")
 
