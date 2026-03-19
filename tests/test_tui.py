@@ -84,9 +84,8 @@ async def test_wizard_menu_options(tmp_path):
         menu = app.screen.query_one("#wizard_menu")
         option_ids = [opt.id for opt in menu._options]
         assert "start_daemon" in option_ids
+        assert "config_bot" in option_ids
         assert "add_machine" in option_ids
-        assert "config_discord" in option_ids
-        assert "config_telegram" in option_ids
         assert "skip" in option_ids
 
 
@@ -121,10 +120,10 @@ async def test_status_panel_renders(tmp_path):
         await pilot.pause()
         status = app.screen.query_one("#status", StatusPanel)
         text = _get_static_text(status)
-        assert "Head:" in text
-        assert "Daemon:" in text
-        assert "WebUI:" in text
-        assert "Claude:" in text
+        assert "Daemon" in text
+        assert "Head" in text
+        assert "WebUI" in text
+        assert "CLIs" in text
 
 
 @pytest.mark.asyncio

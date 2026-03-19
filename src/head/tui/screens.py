@@ -74,17 +74,14 @@ def _load_config(config_path: str):
 # Setup Wizard
 # ---------------------------------------------------------------------------
 
-_WIZARD_OPTIONS = [
-    Option("Start local daemon", id="start_daemon"),
-    Option("Add a remote machine", id="add_machine"),
-    Option("Configure Discord bot", id="config_discord"),
-    Option("Configure Telegram bot", id="config_telegram"),
-    Option("Skip setup", id="skip"),
-]
-
-
 class SetupWizardScreen(Screen):
-    """First-run setup wizard shown when no config exists."""
+    """First-run setup wizard with step-by-step guidance.
+
+    Steps are shown with status indicators:
+    - Green checkmark for completed steps
+    - Numbered circle for pending required steps
+    - "optional" label for non-required steps
+    """
 
     BINDINGS = [
         ("q", "quit_app", "Quit"),
@@ -97,15 +94,99 @@ class SetupWizardScreen(Screen):
         self.config_path = config_path
         self.version = version
 
+    def _check_steps(self) -> dict[str, bool]:
+        """Check which setup steps are already completed."""
+        steps = {
+            "daemon": False,
+            "bot": False,
+            "machine": False,
+        }
+        # Daemon running?
+        daemon_running, _ = _check_daemon_running()
+        steps["daemon"] = daemon_running
+
+        # Any bot configured?
+        try:
+            from head.config import load_config
+
+            cfg = load_config(self.config_path)
+            if cfg.bot:
+                if (cfg.bot.discord and getattr(cfg.bot.discord, "token", None)) or (
+                    cfg.bot.telegram and getattr(cfg.bot.telegram, "token", None)
+                ) or (getattr(cfg.bot, "lark", None) and getattr(cfg.bot.lark, "app_id", None)):
+                    steps["bot"] = True
+            if cfg.peers:
+                steps["machine"] = True
+        except Exception:
+            pass
+
+        return steps
+
+    def _build_step_label(self, num: int, done: bool, text: str, desc: str, optional: bool = False) -> str:
+        """Build a step label with status indicator."""
+        if done:
+            return f"[bold green]✓[/bold green] [dim strikethrough]{text}[/dim strikethrough]  [green]done[/green]"
+        tag = "[dim](optional)[/dim]" if optional else f"[bold cyan]Step {num}[/bold cyan]"
+        return f"{tag}  {text}  [dim]— {desc}[/dim]"
+
     def compose(self) -> ComposeResult:
         yield Header()
+
+        steps = self._check_steps()
+
+        # Count required steps completed
+        required_done = sum([steps["daemon"], steps["bot"]])
+        required_total = 2
+
+        # Welcome text
+        welcome = (
+            f"Welcome to Codecast! {self.version}\n\n"
+            "Codecast lets you control AI coding agents (Claude CLI, Codex CLI) on local\n"
+            "or remote machines through Discord, Telegram, or the web UI.\n\n"
+            "[bold]How it works:[/bold]\n"
+            "  [cyan]Daemon[/cyan]    Runs on each machine — spawns and manages CLI agent processes\n"
+            "  [cyan]Head[/cyan]      Runs here — connects your chat bots to the daemons\n"
+            "  [cyan]Machines[/cyan]  Remote servers you connect to via SSH (optional)\n\n"
+        )
+
+        if required_done == required_total:
+            welcome += "[bold green]All required steps complete![/bold green] Select an option or press [cyan]q[/cyan] to exit.\n"
+        else:
+            welcome += f"[bold]Setup progress: {required_done}/{required_total} required steps complete[/bold]\n"
+
+        # Build options dynamically with completion status
+        step_num = 1
+        options: list[Option] = []
+
+        # Step 1: Daemon (required)
+        label = self._build_step_label(step_num if not steps["daemon"] else 0, steps["daemon"],
+                                       "Start local daemon", "manages Claude/Codex CLI agent processes")
+        options.append(Option(label, id="start_daemon"))
+        if not steps["daemon"]:
+            step_num += 1
+
+        # Step 2: Bot (required — at least one)
+        label = self._build_step_label(step_num if not steps["bot"] else 0, steps["bot"],
+                                       "Configure a chat bot", "Discord or Telegram — how you'll talk to agents")
+        options.append(Option(label, id="config_bot"))
+        if not steps["bot"]:
+            step_num += 1
+
+        # Optional: Add remote machine
+        label = self._build_step_label(0, steps["machine"],
+                                       "Add a remote machine", "connect to a server via SSH", optional=True)
+        options.append(Option(label, id="add_machine"))
+
+        # Finish / Dashboard
+        if required_done == required_total:
+            options.append(Option("[bold green]→ Open Dashboard[/bold green]", id="dashboard"))
+        else:
+            options.append(Option("Skip setup and exit", id="skip"))
+
         yield Vertical(
-            Static(
-                f"Welcome to Codecast! {self.version}\nNo configuration found. Starting setup wizard.\n",
-                id="welcome",
-            ),
-            Static("What would you like to set up?", id="wizard_prompt"),
-            OptionList(*_WIZARD_OPTIONS, id="wizard_menu"),
+            Static(LOGO, id="logo"),
+            Static(welcome, id="welcome"),
+            OptionList(*options, id="wizard_menu"),
             id="wizard_container",
         )
         yield Footer()
@@ -114,14 +195,71 @@ class SetupWizardScreen(Screen):
         option_id = event.option.id
         if option_id == "skip":
             self.app.exit()
+        elif option_id == "dashboard":
+            # Switch to dashboard screen
+            self.app.pop_screen()
+            self.app.push_screen(DashboardScreen(self.config_path, self.version))
         elif option_id == "start_daemon":
             self.app.push_screen(StartDaemonScreen(self.config_path))
+        elif option_id == "config_bot":
+            self.app.push_screen(_BotPickerScreen(self.config_path))
         elif option_id == "add_machine":
             self.app.push_screen(AddMachineScreen(self.config_path))
-        elif option_id == "config_discord":
-            self.app.push_screen(ConfigBotScreen(self.config_path, "discord"))
-        elif option_id == "config_telegram":
-            self.app.push_screen(ConfigBotScreen(self.config_path, "telegram"))
+
+    def on_screen_resume(self) -> None:
+        """Refresh the wizard when returning from a sub-screen."""
+        steps = self._check_steps()
+        required_done = sum([steps["daemon"], steps["bot"]])
+        required_total = 2
+
+        # Update welcome text
+        try:
+            welcome = self.query_one("#welcome", Static)
+            if required_done == required_total:
+                progress = "[bold green]All required steps complete![/bold green] Select an option or press [cyan]q[/cyan] to exit.\n"
+            else:
+                progress = f"[bold]Setup progress: {required_done}/{required_total} required steps complete[/bold]\n"
+            welcome.update(
+                f"Welcome to Codecast! {self.version}\n\n"
+                "Codecast lets you control AI coding agents (Claude CLI, Codex CLI) on local\n"
+                "or remote machines through Discord, Telegram, or the web UI.\n\n"
+                "[bold]How it works:[/bold]\n"
+                "  [cyan]Daemon[/cyan]    Runs on each machine — spawns and manages CLI agent processes\n"
+                "  [cyan]Head[/cyan]      Runs here — connects your chat bots to the daemons\n"
+                "  [cyan]Machines[/cyan]  Remote servers you connect to via SSH (optional)\n\n"
+                + progress
+            )
+        except Exception:
+            pass
+
+        # Update option list
+        try:
+            menu = self.query_one("#wizard_menu", OptionList)
+            menu.clear_options()
+
+            step_num = 1
+            label = self._build_step_label(step_num if not steps["daemon"] else 0, steps["daemon"],
+                                           "Start local daemon", "manages Claude/Codex CLI agent processes")
+            menu.add_option(Option(label, id="start_daemon"))
+            if not steps["daemon"]:
+                step_num += 1
+
+            label = self._build_step_label(step_num if not steps["bot"] else 0, steps["bot"],
+                                           "Configure a chat bot", "Discord or Telegram — how you'll talk to agents")
+            menu.add_option(Option(label, id="config_bot"))
+            if not steps["bot"]:
+                step_num += 1
+
+            label = self._build_step_label(0, steps["machine"],
+                                           "Add a remote machine", "connect to a server via SSH", optional=True)
+            menu.add_option(Option(label, id="add_machine"))
+
+            if required_done == required_total:
+                menu.add_option(Option("[bold green]→ Open Dashboard[/bold green]", id="dashboard"))
+            else:
+                menu.add_option(Option("Skip setup and exit", id="skip"))
+        except Exception:
+            pass
 
     def action_cursor_down(self) -> None:
         try:
@@ -137,6 +275,60 @@ class SetupWizardScreen(Screen):
 
     def action_quit_app(self) -> None:
         self.app.exit()
+
+
+class _BotPickerScreen(Screen):
+    """Intermediate screen to choose which bot platform to configure."""
+
+    BINDINGS = [
+        ("escape", "go_back", "Back"),
+        ("j", "cursor_down", "Down"),
+        ("k", "cursor_up", "Up"),
+    ]
+
+    def __init__(self, config_path: str) -> None:
+        super().__init__()
+        self.config_path = config_path
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield Vertical(
+            Static(
+                "[bold]Configure a chat bot[/bold]\n\n"
+                "Choose a platform. You need at least one bot to interact with your agents.\n"
+                "You can configure more later from the dashboard.\n",
+            ),
+            OptionList(
+                Option("Discord  —  create a bot at discord.com/developers", id="discord"),
+                Option("Telegram  —  create a bot via @BotFather", id="telegram"),
+                Option("Back", id="back"),
+                id="bot_picker_menu",
+            ),
+            id="head_container",
+        )
+        yield Footer()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        option_id = event.option.id
+        if option_id == "back":
+            self.app.pop_screen()
+        elif option_id in ("discord", "telegram"):
+            self.app.push_screen(ConfigBotScreen(self.config_path, option_id))
+
+    def action_cursor_down(self) -> None:
+        try:
+            self.query_one("#bot_picker_menu", OptionList).action_cursor_down()
+        except Exception:
+            pass
+
+    def action_cursor_up(self) -> None:
+        try:
+            self.query_one("#bot_picker_menu", OptionList).action_cursor_up()
+        except Exception:
+            pass
+
+    def action_go_back(self) -> None:
+        self.app.pop_screen()
 
 
 # ---------------------------------------------------------------------------
@@ -434,14 +626,26 @@ class HelpScreen(Screen):
         help_text = (
             "[bold]Codecast TUI — Help[/bold]\n"
             "\n"
+            "[bold]What is Codecast?[/bold]\n"
+            "  Codecast lets you control AI coding agents (Claude CLI, Codex CLI) on\n"
+            "  local or remote machines through Discord, Telegram, or the web UI.\n"
+            "\n"
+            "[bold]Components:[/bold]\n"
+            "  [cyan]Daemon[/cyan]     Runs on each machine. Spawns and manages CLI agent processes\n"
+            "             (Claude, Codex). Streams responses back via JSON-RPC.\n"
+            "  [cyan]Head[/cyan]       Runs here. Connects chat bots (Discord/Telegram/Lark) to\n"
+            "             daemons via SSH tunnels. Routes messages between users and agents.\n"
+            "  [cyan]WebUI[/cyan]      Optional web dashboard for monitoring sessions and machines.\n"
+            "  [cyan]Machines[/cyan]   Remote servers connected via SSH where agents run.\n"
+            "\n"
             "[bold]Dashboard shortcuts:[/bold]\n"
-            "  [cyan]d[/cyan]  Start / stop the local daemon\n"
-            "  [cyan]H[/cyan]  Start / stop the head node (Discord/Telegram/Lark bots)\n"
-            "  [cyan]w[/cyan]  Start / stop the web UI\n"
-            "  [cyan]a[/cyan]  Add a new machine\n"
-            "  [cyan]x[/cyan]  Remove selected machine\n"
-            "  [cyan]s[/cyan]  View active sessions\n"
-            "  [cyan]?[/cyan]  Show this help screen\n"
+            "  [cyan]d[/cyan]  Daemon   — start / stop the agent process manager\n"
+            "  [cyan]H[/cyan]  Head     — start / stop the chat bot bridge\n"
+            "  [cyan]w[/cyan]  WebUI    — start / stop the web dashboard\n"
+            "  [cyan]a[/cyan]  Add      — add a new remote machine\n"
+            "  [cyan]x[/cyan]  Remove   — remove selected machine\n"
+            "  [cyan]s[/cyan]  Sessions — view active agent sessions\n"
+            "  [cyan]?[/cyan]  Help     — show this screen\n"
             "  [cyan]q[/cyan]  Quit\n"
             "\n"
             "[bold]Navigation:[/bold]\n"
@@ -458,7 +662,7 @@ class HelpScreen(Screen):
             "[bold]CLI equivalents:[/bold]\n"
             "  codecast start       Start the daemon\n"
             "  codecast stop        Stop the daemon\n"
-            "  codecast head start  Start the head node\n"
+            "  codecast head start  Start the head node (chat bots)\n"
             "  codecast status      Show component status\n"
             "  codecast peers       List configured machines\n"
             "  codecast sessions    List active sessions\n"
@@ -619,27 +823,58 @@ class StartDaemonScreen(Screen):
 
     def compose(self) -> ComposeResult:
         from head.cli import _DAEMON_PID_FILE, _pid_alive, _read_pid_file
+        from head.peer_manager import resolve_daemon_binary
 
         yield Header()
         daemon_running, daemon_port = _check_daemon_running()
         daemon_pid = _read_pid_file(_DAEMON_PID_FILE)
         claude_available = _check_claude_cli()
+        daemon_binary = resolve_daemon_binary()
+
+        # Explanation header
+        explanation = (
+            "[bold cyan]Daemon[/bold cyan] — the agent process manager\n"
+            "[dim]The daemon runs on a machine and manages Claude/Codex CLI processes.\n"
+            "It receives commands from the head node and streams responses back.[/dim]\n"
+        )
 
         if daemon_running:
             pid_part = f" [dim](pid={daemon_pid})[/dim]" if daemon_pid and _pid_alive(daemon_pid) else ""
-            msg = (
-                f"Daemon is [bold green]● running[/bold green] on port [bold white]{daemon_port}[/bold white]{pid_part}"
+            status = (
+                f"Status: [bold green]● running[/bold green] on port [bold white]{daemon_port}[/bold white]{pid_part}"
+            )
+        elif daemon_binary is None:
+            status = (
+                "Status: [bold yellow]⚠ daemon binary not found[/bold yellow]\n\n"
+                "[bold]To install the daemon, build from source:[/bold]\n"
+                "  [cyan]curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh[/cyan]\n"
+                "  [cyan]git clone https://github.com/Chivier/codecast.git && cd codecast[/cyan]\n"
+                "  [cyan]cargo build --release[/cyan]\n"
+                "  [cyan]mkdir -p ~/.codecast/daemon[/cyan]\n"
+                "  [cyan]cp target/release/codecast-daemon ~/.codecast/daemon/[/cyan]\n\n"
+                "[dim]The daemon is a Rust binary that manages CLI agent subprocesses.\n"
+                "It only needs to be installed on machines where you want to run agents.[/dim]"
             )
         elif not claude_available:
-            msg = "[bold red]✗[/bold red] Claude CLI not found on PATH.\nInstall Claude CLI first to run the daemon."
+            status = (
+                "Status: [bold red]○ stopped[/bold red]\n\n"
+                "[bold yellow]⚠ Claude CLI not found on PATH[/bold yellow]\n"
+                "[dim]The daemon needs Claude CLI (or Codex CLI) installed to run agent sessions.\n"
+                "Install from: https://docs.anthropic.com/en/docs/claude-cli[/dim]"
+            )
         else:
-            msg = "Daemon is [bold red]○ stopped[/bold red]. Claude CLI is [green]available[/green]."
+            status = (
+                "Status: [bold red]○ stopped[/bold red] — Claude CLI is [green]available[/green]\n"
+                f"[dim]Binary: {daemon_binary}[/dim]"
+            )
+
+        msg = explanation + status
 
         options: list[Option] = []
         if daemon_running:
             options.append(Option("Stop daemon", id="stop"))
             options.append(Option("Restart daemon", id="restart"))
-        elif claude_available:
+        elif daemon_binary is not None and claude_available:
             options.append(Option("Start daemon", id="start"))
         options.append(Option("Back", id="back"))
 

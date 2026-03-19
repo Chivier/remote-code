@@ -64,48 +64,55 @@ class StatusPanel(Static):
     def _build_status(self) -> str:
         lines: list[str] = []
 
-        # Head Node
+        # Daemon (agent process manager)
+        port = read_port_file()
+        daemon_pid = read_pid_file(DAEMON_PID_FILE) or find_process("codecast-daemon")
+        if port is not None and daemon_healthy(port):
+            pid_part = f" [dim](pid={daemon_pid})[/dim]" if daemon_pid else ""
+            lines.append(
+                f"[bold]Daemon[/bold]  [dim](agent manager)[/dim]  "
+                f"[bold green]● running[/bold green] on port [bold white]{port}[/bold white]{pid_part}"
+            )
+        else:
+            lines.append("[bold]Daemon[/bold]  [dim](agent manager)[/dim]  [bold red]○ stopped[/bold red]")
+
+        # Head Node (chat bot bridge)
         head_pid = read_pid_file(HEAD_PID_FILE)
         head_running = head_pid is not None and pid_alive(head_pid)
         if head_running:
             bots = self._get_bot_summary()
             bot_info = f" | bots: [bold white]{', '.join(bots)}[/bold white]" if bots else ""
             lines.append(
-                f"[bold]Head:[/bold]   [bold green]● running[/bold green] [dim](pid={head_pid})[/dim]{bot_info}"
+                f"[bold]Head[/bold]    [dim](chat bots)[/dim]      "
+                f"[bold green]● running[/bold green] [dim](pid={head_pid})[/dim]{bot_info}"
             )
         else:
-            lines.append("[bold]Head:[/bold]   [bold red]○ stopped[/bold red]")
+            lines.append("[bold]Head[/bold]    [dim](chat bots)[/dim]      [bold red]○ stopped[/bold red]")
 
-        # Daemon
-        port = read_port_file()
-        daemon_pid = read_pid_file(DAEMON_PID_FILE) or find_process("codecast-daemon")
-        if port is not None and daemon_healthy(port):
-            pid_part = f" [dim](pid={daemon_pid})[/dim]" if daemon_pid else ""
-            lines.append(
-                f"[bold]Daemon:[/bold] [bold green]● running[/bold green]"
-                f" on port [bold white]{port}[/bold white]{pid_part}"
-            )
-        else:
-            lines.append("[bold]Daemon:[/bold] [bold red]○ stopped[/bold red]")
-
-        # WebUI
+        # WebUI (web dashboard)
         webui_pid = read_pid_file(WEBUI_PID_FILE)
         webui_port = read_pid_file(WEBUI_PORT_FILE)
         if webui_pid is not None and pid_alive(webui_pid):
             lines.append(
-                f"[bold]WebUI:[/bold]  [bold green]● running[/bold green]"
-                f" on [bold white]http://127.0.0.1:{webui_port}[/bold white]"
+                f"[bold]WebUI[/bold]   [dim](dashboard)[/dim]      "
+                f"[bold green]● running[/bold green] on [bold white]http://127.0.0.1:{webui_port}[/bold white]"
                 f" [dim](pid={webui_pid})[/dim]"
             )
         else:
-            lines.append("[bold]WebUI:[/bold]  [bold red]○ stopped[/bold red]")
+            lines.append("[bold]WebUI[/bold]   [dim](dashboard)[/dim]      [bold red]○ stopped[/bold red]")
 
         # Claude CLI
         claude_path = shutil.which("claude")
+        codex_path = shutil.which("codex")
+        cli_parts: list[str] = []
         if claude_path:
-            lines.append(f"[bold]Claude:[/bold] [bold green]✓ available[/bold green] [dim]({claude_path})[/dim]")
+            cli_parts.append(f"Claude [green]✓[/green]")
+        if codex_path:
+            cli_parts.append(f"Codex [green]✓[/green]")
+        if cli_parts:
+            lines.append(f"[bold]CLIs[/bold]    [dim](AI agents)[/dim]       {' | '.join(cli_parts)}")
         else:
-            lines.append("[bold]Claude:[/bold] [bold red]✗ not found[/bold red]")
+            lines.append("[bold]CLIs[/bold]    [dim](AI agents)[/dim]       [bold red]✗ none found[/bold red] [dim](install claude or codex)[/dim]")
 
         return "\n".join(lines)
 
