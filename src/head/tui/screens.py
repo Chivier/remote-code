@@ -91,13 +91,15 @@ class SetupWizardScreen(Screen):
 
     def _check_steps(self) -> dict[str, bool]:
         """Check which setup steps are already completed."""
+        from head.peer_manager import resolve_daemon_binary
+
         steps = {
             "daemon": False,
             "bot": False,
             "machine": False,
         }
-        daemon_running, _ = _check_daemon_running()
-        steps["daemon"] = daemon_running
+        # Daemon step is done once the binary is installed (doesn't need to be running)
+        steps["daemon"] = resolve_daemon_binary() is not None
 
         try:
             from head.config import load_config
@@ -130,7 +132,7 @@ class SetupWizardScreen(Screen):
 
         options.append(
             Option(
-                self._build_step_label(steps["daemon"], "Install & start daemon", "manages CLI agent processes"),
+                self._build_step_label(steps["daemon"], "Install daemon", "manages CLI agent processes"),
                 id="start_daemon",
             )
         )
@@ -807,12 +809,20 @@ class StartDaemonScreen(Screen):
     def _refresh_ui(self) -> None:
         """Rebuild status text and menu options based on current state."""
         from head.cli import _DAEMON_PID_FILE, _pid_alive, _read_pid_file
+        from head.daemon_installer import get_current_version, get_daemon_version
         from head.peer_manager import resolve_daemon_binary
 
         daemon_running, daemon_port = _check_daemon_running()
         daemon_pid = _read_pid_file(_DAEMON_PID_FILE)
         claude_available = _check_claude_cli()
         daemon_binary = resolve_daemon_binary()
+
+        # Version check
+        codecast_version = get_current_version()
+        daemon_version = get_daemon_version(daemon_binary) if daemon_binary else ""
+        version_mismatch = (
+            daemon_binary is not None and daemon_version and codecast_version and daemon_version != codecast_version
+        )
 
         explanation = (
             "[bold cyan]Daemon[/bold cyan] — the agent process manager\n"
@@ -824,6 +834,8 @@ class StartDaemonScreen(Screen):
             status = (
                 f"Status: [bold green]● running[/bold green] on port [bold white]{daemon_port}[/bold white]{pid_part}"
             )
+            if daemon_version:
+                status += f"\n[dim]Daemon version: {daemon_version}[/dim]"
         elif daemon_binary is None:
             from head.daemon_installer import get_expected_asset_name
 
@@ -848,6 +860,15 @@ class StartDaemonScreen(Screen):
                 "Status: [bold red]○ stopped[/bold red] — Claude CLI is [green]available[/green]\n"
                 f"[dim]Binary: {daemon_binary}[/dim]"
             )
+            if daemon_version:
+                status += f"\n[dim]Daemon version: {daemon_version}[/dim]"
+
+        if version_mismatch:
+            status += (
+                f"\n\n[bold yellow]⚠ Version mismatch![/bold yellow] "
+                f"daemon [bold]{daemon_version}[/bold] ≠ codecast [bold]{codecast_version}[/bold]\n"
+                "[dim]Select 'Update daemon' to download the matching version.[/dim]"
+            )
 
         status_widget = self.query_one("#daemon_status", Static)
         status_widget.update(explanation + status)
@@ -860,10 +881,25 @@ class StartDaemonScreen(Screen):
         elif daemon_running:
             menu.add_option(Option("Stop daemon", id="stop"))
             menu.add_option(Option("Restart daemon", id="restart"))
+            if version_mismatch:
+                menu.add_option(
+                    Option(
+                        f"[bold yellow]Update daemon[/bold yellow] ({daemon_version} → {codecast_version})",
+                        id="update",
+                    )
+                )
         elif daemon_binary is None:
             menu.add_option(Option("[bold]Install daemon[/bold]", id="install"))
-        elif claude_available:
-            menu.add_option(Option("Start daemon", id="start"))
+        else:
+            if version_mismatch:
+                menu.add_option(
+                    Option(
+                        f"[bold yellow]Update daemon[/bold yellow] ({daemon_version} → {codecast_version})",
+                        id="update",
+                    )
+                )
+            if claude_available:
+                menu.add_option(Option("Start daemon", id="start"))
         menu.add_option(Option("Back", id="back"))
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
@@ -879,6 +915,33 @@ class StartDaemonScreen(Screen):
             self._start_daemon()
         elif option_id == "install":
             self._install_daemon()
+        elif option_id == "update":
+            self._update_daemon()
+
+    def _update_daemon(self) -> None:
+        """Stop daemon if running, remove old binary, and re-install."""
+        from head.daemon_installer import LOCAL_BINARY
+        from head.peer_manager import resolve_daemon_binary
+
+        # Stop daemon if running
+        daemon_running, _ = _check_daemon_running()
+        if daemon_running:
+            self._stop_daemon_only()
+
+        # Remove existing binary so installer downloads fresh
+        binary = resolve_daemon_binary()
+        if binary and binary.exists():
+            try:
+                binary.unlink()
+            except OSError:
+                pass
+        if LOCAL_BINARY.exists():
+            try:
+                LOCAL_BINARY.unlink()
+            except OSError:
+                pass
+
+        self._install_daemon()
 
     def _install_daemon(self) -> None:
         """Run daemon installation in a background thread."""

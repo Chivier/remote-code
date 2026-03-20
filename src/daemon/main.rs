@@ -25,6 +25,13 @@ use skill_manager::SkillManager;
 
 #[tokio::main]
 async fn main() {
+    // Handle --version before anything else
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("codecast-daemon {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(

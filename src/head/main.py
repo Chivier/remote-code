@@ -98,8 +98,9 @@ async def main(config_path: str = "") -> None:
         sys.exit(1)
 
     if not config.machines:
-        logger.error("No machines configured in config.yaml")
-        sys.exit(1)
+        logger.warning(
+            "No machines configured in config.yaml — bot will start but sessions require at least one machine"
+        )
 
     # Initialize shared components
     ssh_manager = SSHManager(config)

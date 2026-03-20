@@ -56,6 +56,40 @@ def get_current_version() -> str:
         return ""
 
 
+def get_daemon_version(binary_path: Path | str | None = None) -> str:
+    """Return the version string of the installed daemon binary, or '' if unknown.
+
+    Runs ``codecast-daemon --version`` and parses lines like
+    ``codecast-daemon 0.2.12`` or just ``0.2.12``.
+    """
+    if binary_path is None:
+        from head.peer_manager import resolve_daemon_binary
+
+        binary_path = resolve_daemon_binary()
+    if binary_path is not None:
+        binary_path = Path(binary_path)
+    if binary_path is None or not binary_path.exists():
+        return ""
+    try:
+        result = subprocess.run(
+            [str(binary_path), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        text = result.stdout.strip()
+        if not text:
+            return ""
+        # Accept "codecast-daemon 0.2.12" or just "0.2.12"
+        for token in reversed(text.split()):
+            # Version-like token: digits and dots
+            if token and token[0].isdigit() and "." in token:
+                return token
+        return text
+    except Exception:
+        return ""
+
+
 def get_expected_asset_name() -> str | None:
     """Return the GitHub release asset name for this platform, or None."""
     system = _platform.system().lower()
