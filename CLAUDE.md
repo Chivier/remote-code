@@ -17,25 +17,47 @@ codecast/
 ├── src/
 │   ├── head/                  # Head Node (Python) - local bot + SSH orchestrator
 │   │   ├── __init__.py
-│   │   ├── main.py            # Entry point: loads config, starts bots, graceful shutdown, restart support
+│   │   ├── __version__.py     # Runtime version string (kept in sync with pyproject.toml)
+│   │   ├── cli.py             # CLI entry point: argparse, subcommand dispatch (start/stop/restart/update/...)
+│   │   ├── main.py            # Head node entry: loads config, starts bots, graceful shutdown, restart
 │   │   ├── config.py          # Config loader: YAML parsing, env var expansion, dataclasses, SSH config parser
+│   │   ├── engine.py          # Core command engine: session lifecycle, message routing
 │   │   ├── ssh_manager.py     # SSH connections, tunnels, daemon deployment, skills sync, localhost mode
+│   │   ├── peer_manager.py    # Peer resolution, daemon binary discovery
+│   │   ├── process_monitor.py # PID/port file helpers, daemon health check, process discovery
 │   │   ├── session_router.py  # SQLite-backed session registry (channel -> session mapping)
 │   │   ├── daemon_client.py   # JSON-RPC + SSE client for communicating with remote daemon
-│   │   ├── bot_base.py        # Abstract base: command dispatch, message forwarding, streaming, admin commands
-│   │   ├── bot_discord.py     # Discord implementation: 17 slash commands, typing, heartbeat, restart notify
-│   │   ├── bot_telegram.py    # Telegram implementation: command handlers, polling
+│   │   ├── daemon_installer.py # Daemon binary download/install, version helpers
+│   │   ├── token_manager.py   # Auth token generation, storage, revocation
 │   │   ├── message_formatter.py # Message splitting, tool_use batching, status display
-│   │   ├── file_pool.py       # Discord attachment download, file type validation, LRU eviction
-│   │   └── name_generator.py  # Human-friendly session names (adjective-noun)
+│   │   ├── file_pool.py       # Attachment download, file type validation, LRU eviction
+│   │   ├── file_forward.py    # File upload and forwarding to daemon
+│   │   ├── name_generator.py  # Human-friendly session names (adjective-noun)
+│   │   ├── tui/               # Interactive TUI (Textual)
+│   │   │   ├── app.py         # Main TUI application
+│   │   │   ├── screens.py     # TUI screens: dashboard, daemon, setup wizard
+│   │   │   └── widgets.py     # Reusable TUI widgets
+│   │   └── webui/             # Web UI
+│   │       ├── server.py      # aiohttp web server
+│   │       ├── auth.py        # Web auth middleware
+│   │       ├── static/        # Static assets (JS, CSS)
+│   │       └── templates/     # HTML templates
 │   │
 │   └── daemon/                # Remote Agent Daemon (Rust) - runs on remote machines
-│       ├── main.rs            # Entry point, Axum HTTP server
+│       ├── main.rs            # Entry point, Axum HTTP server, port allocation
 │       ├── server.rs          # JSON-RPC router, SSE streaming
 │       ├── session_pool.rs    # Claude CLI process management, per-message spawn with --resume
 │       ├── message_queue.rs   # Per-session message queue: user buffering, response buffering
 │       ├── skill_manager.rs   # Skills sync: CLAUDE.md + .claude/skills/ to project dirs
-│       └── types.rs           # All type definitions: RPC, session, stream events, CLI protocol
+│       ├── types.rs           # All type definitions: RPC, session, stream events, CLI protocol
+│       ├── config.rs          # Daemon config: port, bind, TLS, tokens
+│       ├── auth.rs            # Token-based auth middleware
+│       └── tls.rs             # TLS certificate generation and loading
+│
+├── scripts/
+│   ├── bump-version.sh        # Version bump across pyproject.toml, __version__.py, Cargo.toml
+│   ├── lint.sh                # Lint checker/fixer (ruff + clippy + cargo fmt)
+│   └── install.sh             # Installation script
 │
 ├── docs/                      # Documentation (mdbook)
 │   ├── book.toml              # mdbook configuration
@@ -49,16 +71,27 @@ codecast/
 │   └── .claude/
 │       └── skills/            # Skill files synced to projects' .claude/skills/
 │
-└── tests/                     # Python tests (368 tests, 0 warnings)
-    ├── test_bot_commands.py   # 92 tests: commands, full message flow, admin, add/remove machine
-    ├── test_daemon_client.py  # RPC client tests: call, health, sessions, streaming
-    ├── test_file_pool.py      # File pool: sanitize, MIME types, add/get, eviction, download
-    ├── test_file_transfer.py  # File upload and replacement in messages
-    ├── test_message_formatter.py  # Message splitting, formatting, truncation
-    ├── test_name_generator.py # Session name generation and validation
-    ├── test_session_router.py # SQLite session CRUD, lifecycle, migration
-    ├── test_ssh_upload.py     # SSH file upload tests
-    └── test_tool_batching.py  # Tool message compression and batching
+└── tests/                     # Python tests (812 tests)
+    ├── test_bot_commands.py   # 117 tests: commands, message flow, admin, add/remove machine
+    ├── test_cli.py            # 54 tests: CLI parsing, start/stop/update, version mismatch, uninstall
+    ├── test_config_v2.py      # 19 tests: v2 config loading, peer config, migration
+    ├── test_daemon_client.py  # 34 tests: RPC calls, health, sessions, SSE streaming
+    ├── test_file_forward.py   # 51 tests: file forwarding, upload, replacement
+    ├── test_file_pool.py      # 52 tests: sanitize, MIME types, pool CRUD, eviction, download
+    ├── test_file_transfer.py  # 10 tests: file upload/replace in messages
+    ├── test_lark_adapter.py   # 68 tests: Lark bot adapter
+    ├── test_message_formatter.py # 71 tests: message splitting, formatting, truncation
+    ├── test_name_generator.py # 28 tests: session name generation, validation, uniqueness
+    ├── test_peer_manager.py   # 14 tests: peer resolution, daemon binary discovery
+    ├── test_process_monitor.py # 24 tests: PID/port file helpers, daemon health
+    ├── test_session_router.py # 53 tests: SQLite CRUD, lifecycle, find by name/ID, rename, migration
+    ├── test_ssh_upload.py     # 7 tests: SSH file upload with tunnel verification
+    ├── test_telegram_adapter.py # 71 tests: Telegram bot adapter
+    ├── test_token_manager.py  # 8 tests: token generation, list, revoke
+    ├── test_tool_batching.py  # 29 tests: tool message compression, batch flushing
+    ├── test_transport_http.py # 10 tests: HTTP transport layer
+    ├── test_transport_ssh.py  # 17 tests: SSH transport layer
+    └── test_tui.py            # 75 tests: TUI screens, widgets, daemon start/stop
 ```
 
 ## Architecture Design
@@ -84,7 +117,7 @@ codecast/
          ▼
   ┌──────────────┐
   │   Daemon     │  Rust (remote machine or localhost)
-  │  server.rs   │  - Actix-web HTTP on 127.0.0.1:9100 (SSH tunnel only)
+  │  server.rs   │  - Axum HTTP on 127.0.0.1:9100 (port auto-increments on collision)
   │              │  - JSON-RPC request routing
   │              │  - SSE streaming for session.send
   │              │  - ~ path expansion (homedir)
@@ -140,22 +173,32 @@ codecast/
 
 | Component | Language | Role |
 |-----------|----------|------|
-| `src/head/main.py` | Python | Entry point, config loading, bot lifecycle, graceful shutdown, restart support |
+| `src/head/cli.py` | Python | CLI entry point, argparse dispatch (`start`/`stop`/`restart`/`update`/`status`/...), daemon lifecycle with version-mismatch auto-restart |
+| `src/head/main.py` | Python | Head node entry point, config loading, bot lifecycle, graceful shutdown, restart support |
 | `src/head/config.py` | Python | YAML config parsing, `${ENV_VAR}` expansion, dataclass models, SSH config parser, config persistence via ruamel.yaml |
-| `src/head/ssh_manager.py` | Python | asyncssh connections, port forwarding, daemon deploy via SCP, skills sync, localhost mode (local daemon spawn) |
+| `src/head/engine.py` | Python | Core command engine: session lifecycle, message routing, command dispatch |
+| `src/head/ssh_manager.py` | Python | asyncssh connections, port forwarding, daemon deploy via SCP, skills sync, localhost mode |
+| `src/head/peer_manager.py` | Python | Peer resolution, daemon binary discovery (`resolve_daemon_binary`) |
+| `src/head/process_monitor.py` | Python | PID/port file helpers, `daemon_healthy()`, `find_process()`, `pid_alive()` |
 | `src/head/session_router.py` | Python | SQLite session registry, channel->session mapping, lifecycle tracking, session naming |
 | `src/head/daemon_client.py` | Python | aiohttp-based JSON-RPC client, SSE stream parsing |
-| `src/head/bot_base.py` | Python | Abstract bot: command routing, message forwarding, stream buffering, tool batching, admin commands, machine management |
-| `src/head/bot_discord.py` | Python | Discord: 17 slash commands with autocomplete, typing indicator, 25s heartbeat status, restart notification |
-| `src/head/bot_telegram.py` | Python | Telegram command/message handlers, polling |
+| `src/head/daemon_installer.py` | Python | Daemon binary download/install from GitHub releases, `get_current_version()`, `get_daemon_version()` |
+| `src/head/token_manager.py` | Python | Auth token CRUD (generate, list, revoke) stored in `~/.codecast/tokens.yaml` |
 | `src/head/message_formatter.py` | Python | Smart message splitting (code blocks, paragraphs), tool/status formatting, tool batch compression |
-| `src/head/file_pool.py` | Python | Discord attachment download, MIME validation, LRU eviction pool |
+| `src/head/file_pool.py` | Python | Attachment download, MIME validation, LRU eviction pool |
+| `src/head/file_forward.py` | Python | File upload and forwarding to daemon |
 | `src/head/name_generator.py` | Python | Human-friendly session names (adjective-noun format) |
-| `src/daemon/server.rs` | Rust | Axum RPC server, method dispatch, SSE response streaming, ~ path expansion |
-| `src/daemon/session_pool.rs` | Rust | Claude CLI process management, per-message spawn with --resume, ~ path expansion |
+| `src/head/tui/` | Python | Interactive TUI (Textual): dashboard, daemon management, setup wizard |
+| `src/head/webui/` | Python | Web UI: aiohttp server, auth, templates |
+| `src/daemon/main.rs` | Rust | Entry point, Axum HTTP server, port allocation (auto-increment on collision) |
+| `src/daemon/server.rs` | Rust | JSON-RPC router, method dispatch, SSE response streaming, ~ path expansion |
+| `src/daemon/session_pool.rs` | Rust | Claude CLI process management, per-message spawn with --resume |
 | `src/daemon/message_queue.rs` | Rust | User message buffering, response buffering, client reconnect state |
 | `src/daemon/skill_manager.rs` | Rust | Copy CLAUDE.md + .claude/skills/ to project dirs (skip existing) |
 | `src/daemon/types.rs` | Rust | All types: RPC protocol, session, stream events, CLI protocol |
+| `src/daemon/config.rs` | Rust | Daemon config: port, bind address, TLS paths, token file |
+| `src/daemon/auth.rs` | Rust | Token-based auth middleware for remote access |
+| `src/daemon/tls.rs` | Rust | Self-signed TLS certificate generation and loading |
 
 ### RPC Methods (Daemon API)
 
@@ -317,19 +360,30 @@ All version files are kept in sync:
 
 ### Test Suite Overview
 
-368 tests, 0 warnings. All tests use `pytest` with `pytest-asyncio`.
+812 tests. All tests use `pytest` with `pytest-asyncio`.
 
 | Test File | Tests | Coverage |
 |-----------|-------|----------|
-| `test_bot_commands.py` | 92 | Commands, full message flow (text/partial/tool/error/queued/system/ping), tilde expansion, add/remove machine, admin checks |
-| `test_daemon_client.py` | 21 | RPC calls, health check, session management, SSE streaming, connection errors |
-| `test_file_pool.py` | 27 | Filename sanitization, MIME types, file pool CRUD, eviction, Discord download |
-| `test_file_transfer.py` | 4 | File upload/replace in messages, forward with files |
-| `test_message_formatter.py` | 38 | Message splitting, formatting (tool/session/machine/health/monitor), truncation |
-| `test_name_generator.py` | 14 | Session name generation, validation, uniqueness |
-| `test_session_router.py` | 35 | SQLite CRUD, lifecycle, find by name/ID, rename, migration |
+| `test_bot_commands.py` | 117 | Commands, full message flow, admin, add/remove machine |
+| `test_cli.py` | 54 | CLI parsing, start/stop/update, version mismatch auto-restart, uninstall, completion |
+| `test_config_v2.py` | 19 | v2 config loading, peer config, migration |
+| `test_daemon_client.py` | 34 | RPC calls, health check, session management, SSE streaming |
+| `test_file_forward.py` | 51 | File forwarding, upload, replacement |
+| `test_file_pool.py` | 52 | Filename sanitization, MIME types, pool CRUD, eviction, download |
+| `test_file_transfer.py` | 10 | File upload/replace in messages, forward with files |
+| `test_lark_adapter.py` | 68 | Lark bot adapter |
+| `test_message_formatter.py` | 71 | Message splitting, formatting, truncation |
+| `test_name_generator.py` | 28 | Session name generation, validation, uniqueness |
+| `test_peer_manager.py` | 14 | Peer resolution, daemon binary discovery |
+| `test_process_monitor.py` | 24 | PID/port file helpers, daemon health |
+| `test_session_router.py` | 53 | SQLite CRUD, lifecycle, find by name/ID, rename, migration |
 | `test_ssh_upload.py` | 7 | SSH file upload with tunnel verification |
+| `test_telegram_adapter.py` | 71 | Telegram bot adapter |
+| `test_token_manager.py` | 8 | Token generation, list, revoke |
 | `test_tool_batching.py` | 29 | Tool message compression, batch flushing, interleaving |
+| `test_transport_http.py` | 10 | HTTP transport layer |
+| `test_transport_ssh.py` | 17 | SSH transport layer |
+| `test_tui.py` | 75 | TUI screens, widgets, daemon start/stop |
 
 ### Running Tests
 
@@ -363,6 +417,13 @@ python -m pytest tests/test_bot_commands.py::TestFullMessageFlow -v
 - Localhost detection checks all local IPs, hostname, and FQDN (not just literal `localhost`)
 
 ## Known Pitfalls & Lessons
+
+### Daemon Lifecycle: One Daemon Per Machine
+- The daemon auto-increments its port if the default (9100) is in use (up to port+100). This means if a stale daemon holds the port, the new one silently binds to 9101, 9102, etc.
+- `_cmd_stop` must **wait for the process to die** (up to 5s, then SIGKILL) before returning, otherwise the port is still occupied when the new daemon starts
+- `_cmd_start` checks for version mismatch: if the on-disk binary version (`get_daemon_version()`) differs from the Python package version (`get_current_version()`), the old daemon is stopped and a new one is started automatically
+- `_cmd_update` stops the daemon **before** `git pull` so the new binary is used after restart
+- The TUI's `_stop_daemon_only()` has the same wait-for-death logic — keep both in sync when modifying stop behavior
 
 ### SSH ProxyCommand vs ProxyJump
 - Many SSH configs use `ProxyCommand sshpass ... ssh jumphost -W %h:%p` instead of `ProxyJump`

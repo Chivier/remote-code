@@ -33,9 +33,40 @@ from pathlib import Path
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments and return the resulting namespace."""
+    from head.__version__ import __version__
+
     parser = argparse.ArgumentParser(
         prog="codecast",
         description="Codecast - interact with Claude CLI on remote machines",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "daemon commands:\n"
+            "  start       Start the daemon\n"
+            "  stop        Stop the daemon\n"
+            "  restart     Restart the daemon\n"
+            "\n"
+            "service commands:\n"
+            "  head        Start the head node (Discord/Telegram/Lark)\n"
+            "  webui       Start/stop the web UI\n"
+            "\n"
+            "info commands:\n"
+            "  status      Show component status\n"
+            "  peers       List configured peers\n"
+            "  sessions    List active sessions\n"
+            "\n"
+            "management:\n"
+            "  token       Manage auth tokens\n"
+            "  update      Git pull and restart\n"
+            "  uninstall   Remove codecast data and daemon binary\n"
+            "  completion  Generate shell completion script\n"
+            "\n"
+            "Run 'codecast <command> --help' for details."
+        ),
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"codecast {__version__}",
     )
     parser.add_argument(
         "--config",
@@ -60,7 +91,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     subparsers.add_parser("update", help="Git pull and restart")
 
     # status ----------------------------------------------------------
-    subparsers.add_parser("status", help="Show daemon status")
+    subparsers.add_parser("status", help="Show component status")
 
     # peers -----------------------------------------------------------
     subparsers.add_parser("peers", help="List configured peers")
@@ -99,6 +130,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     sub_webui.add_argument("--port", "-p", type=int, default=None, help="WebUI port")
     sub_webui.add_argument("--bind", "-b", default=None, help="Bind address")
+
+    # uninstall -------------------------------------------------------
+    sub_uninstall = subparsers.add_parser("uninstall", help="Remove codecast data and daemon binary")
+    sub_uninstall.add_argument(
+        "--keep-config",
+        action="store_true",
+        default=False,
+        help="Keep config.yaml, daemon.yaml, and tokens.yaml",
+    )
+    sub_uninstall.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        default=False,
+        help="Skip confirmation prompt",
+    )
+
+    # completion ------------------------------------------------------
+    sub_completion = subparsers.add_parser("completion", help="Generate shell completion script")
+    sub_completion.add_argument(
+        "shell",
+        choices=["bash", "zsh", "fish"],
+        help="Shell to generate completion for",
+    )
 
     return parser.parse_args(argv)
 
@@ -150,11 +205,20 @@ def _run_tui(args: argparse.Namespace) -> None:
 
 def _cmd_start(args: argparse.Namespace) -> None:
     """Start the daemon as a background subprocess."""
+    from head.daemon_installer import get_current_version, get_daemon_version
+
     # Check if already running
     port = _read_port_file()
     if port is not None and _daemon_healthy(port):
-        print(f"Daemon already running on port {port}")
-        return
+        # Check for version mismatch — auto-restart if binary was updated
+        pkg_version = get_current_version()
+        daemon_version = get_daemon_version()
+        if pkg_version and daemon_version and pkg_version != daemon_version:
+            print(f"Daemon version mismatch: running {daemon_version}, installed {pkg_version}. Restarting...")
+            _cmd_stop(args)
+        else:
+            print(f"Daemon already running on port {port}")
+            return
 
     # Resolve daemon binary
     daemon_bin = None
@@ -189,11 +253,13 @@ def _cmd_start(args: argparse.Namespace) -> None:
 
 
 def _cmd_stop(args: argparse.Namespace) -> None:
-    """Stop the running daemon."""
+    """Stop the running daemon and wait for it to exit."""
+    import time
+
     stopped = False
+    daemon_pid = _read_pid_file(_DAEMON_PID_FILE)
 
     # Try PID file first (most reliable)
-    daemon_pid = _read_pid_file(_DAEMON_PID_FILE)
     if daemon_pid is not None and _pid_alive(daemon_pid):
         try:
             os.kill(daemon_pid, signal.SIGTERM)
@@ -207,6 +273,20 @@ def _cmd_stop(args: argparse.Namespace) -> None:
             subprocess.run(["pkill", "-f", "codecast-daemon"], check=False)
         except FileNotFoundError:
             pass
+
+    # Wait for the process to actually die so the port is freed
+    if daemon_pid is not None and _pid_alive(daemon_pid):
+        for _ in range(50):  # up to 5 seconds
+            if not _pid_alive(daemon_pid):
+                break
+            time.sleep(0.1)
+        else:
+            # Still alive after timeout — force kill
+            try:
+                os.kill(daemon_pid, signal.SIGKILL)
+                time.sleep(0.1)
+            except ProcessLookupError:
+                pass
 
     # Remove PID and port files
     _DAEMON_PID_FILE.unlink(missing_ok=True)
@@ -222,6 +302,8 @@ def _cmd_restart(args: argparse.Namespace) -> None:
 
 def _cmd_update(args: argparse.Namespace) -> None:
     """Git pull and restart."""
+    # Stop the running daemon first so the new binary is used after restart
+    _cmd_stop(args)
     print("Pulling latest code...")
     result = subprocess.run(["git", "pull", "--ff-only"], capture_output=True, text=True)
     print(result.stdout)
@@ -446,6 +528,265 @@ def _cmd_head(args: argparse.Namespace) -> None:
     cli_main(cfg_path)
 
 
+def _cmd_uninstall(args: argparse.Namespace) -> None:
+    """Remove codecast data directory and daemon binary."""
+    codecast_dir = Path.home() / ".codecast"
+    keep_config = getattr(args, "keep_config", False)
+    skip_confirm = getattr(args, "yes", False)
+
+    if not codecast_dir.exists():
+        print("Nothing to remove — ~/.codecast/ does not exist.")
+        return
+
+    # Build list of paths to remove
+    always_remove = [
+        "daemon/",
+        "daemon.log",
+        "file-pool/",
+        "downloads/",
+        "sessions.db",
+        "skills/",
+    ]
+    # PID and port files (glob)
+    for p in codecast_dir.glob("*.pid"):
+        always_remove.append(p.name)
+    for p in codecast_dir.glob("*.port"):
+        always_remove.append(p.name)
+
+    config_files = ["config.yaml", "daemon.yaml", "tokens.yaml"]
+
+    to_remove = list(always_remove)
+    if not keep_config:
+        to_remove.extend(config_files)
+
+    # Filter to things that actually exist
+    existing = []
+    for name in to_remove:
+        path = codecast_dir / name
+        if path.exists():
+            existing.append(path)
+
+    if not existing:
+        if keep_config:
+            print("Nothing to remove (only config files remain, preserved by --keep-config).")
+        else:
+            print("Nothing to remove — ~/.codecast/ is empty.")
+        return
+
+    # Show what will be removed
+    print("The following will be removed:")
+    for p in existing:
+        suffix = "/" if p.is_dir() else ""
+        print(f"  ~/.codecast/{p.name}{suffix}")
+    if keep_config:
+        print(f"\nKept (--keep-config): {', '.join(config_files)}")
+
+    if not skip_confirm:
+        try:
+            answer = input("\nProceed? [y/N] ").strip().lower()
+            if answer not in ("y", "yes"):
+                print("Aborted.")
+                return
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            return
+
+    # Stop running processes first
+    print("Stopping running processes...")
+    _stop_all_processes()
+
+    # Remove files
+    import shutil
+
+    removed = []
+    for p in existing:
+        try:
+            if p.is_dir():
+                shutil.rmtree(p)
+            else:
+                p.unlink()
+            removed.append(p.name)
+        except OSError as exc:
+            print(f"  Warning: could not remove {p}: {exc}")
+
+    # Remove the directory itself if empty
+    try:
+        if codecast_dir.exists() and not any(codecast_dir.iterdir()):
+            codecast_dir.rmdir()
+            print(f"\nRemoved ~/.codecast/ ({len(removed)} items)")
+        else:
+            remaining = list(codecast_dir.iterdir())
+            print(f"\nRemoved {len(removed)} items from ~/.codecast/")
+            if remaining:
+                print(f"Remaining: {', '.join(p.name for p in remaining)}")
+    except OSError:
+        print(f"\nRemoved {len(removed)} items from ~/.codecast/")
+
+    print("\nTo also uninstall the Python package:")
+    print("  pip uninstall codecast")
+
+
+def _stop_all_processes() -> None:
+    """Stop daemon, head, and webui processes."""
+    for pid_file, label in [
+        (_DAEMON_PID_FILE, "daemon"),
+        (_HEAD_PID_FILE, "head"),
+        (_WEBUI_PID_FILE, "webui"),
+    ]:
+        pid = _read_pid_file(pid_file)
+        if pid is not None and _pid_alive(pid):
+            try:
+                os.kill(pid, signal.SIGTERM)
+                print(f"  Stopped {label} (pid={pid})")
+            except ProcessLookupError:
+                pass
+
+
+def _cmd_completion(args: argparse.Namespace) -> None:
+    """Generate shell completion script for bash, zsh, or fish."""
+    shell = args.shell
+    if shell == "bash":
+        print(_completion_bash())
+    elif shell == "zsh":
+        print(_completion_zsh())
+    elif shell == "fish":
+        print(_completion_fish())
+
+
+def _completion_bash() -> str:
+    return """\
+_codecast() {
+    local cur prev commands
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    commands="start stop restart status peers sessions token head webui update uninstall completion"
+
+    case "$prev" in
+        codecast)
+            COMPREPLY=( $(compgen -W "$commands --version --help --config" -- "$cur") )
+            return 0
+            ;;
+        token)
+            COMPREPLY=( $(compgen -W "generate list revoke" -- "$cur") )
+            return 0
+            ;;
+        webui)
+            COMPREPLY=( $(compgen -W "start stop status" -- "$cur") )
+            return 0
+            ;;
+        head|bot)
+            COMPREPLY=( $(compgen -W "start stop --config --yes" -- "$cur") )
+            return 0
+            ;;
+        completion)
+            COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") )
+            return 0
+            ;;
+        uninstall)
+            COMPREPLY=( $(compgen -W "--keep-config --yes" -- "$cur") )
+            return 0
+            ;;
+    esac
+
+    if [[ "$cur" == -* ]]; then
+        COMPREPLY=( $(compgen -W "--version --help --config" -- "$cur") )
+    fi
+}
+
+complete -F _codecast codecast"""
+
+
+def _completion_zsh() -> str:
+    return '''\
+#compdef codecast
+
+_codecast() {
+    local -a commands
+    commands=(
+        'start:Start the daemon'
+        'stop:Stop the daemon'
+        'restart:Restart the daemon'
+        'status:Show component status'
+        'peers:List configured peers'
+        'sessions:List active sessions'
+        'token:Manage auth tokens'
+        'head:Start the head node'
+        'webui:Start/stop the web UI'
+        'update:Git pull and restart'
+        'uninstall:Remove codecast data and daemon binary'
+        'completion:Generate shell completion script'
+    )
+
+    _arguments -C \\
+        '--version[Show version]' \\
+        '--help[Show help]' \\
+        '(-c --config)'{-c,--config}'[Config file]:file:_files' \\
+        '1:command:->command' \\
+        '*::arg:->args'
+
+    case "$state" in
+        command)
+            _describe -t commands 'codecast command' commands
+            ;;
+        args)
+            case "${words[1]}" in
+                token)
+                    _values 'action' generate list revoke
+                    ;;
+                webui)
+                    _values 'action' start stop status
+                    ;;
+                head)
+                    _values 'action' start stop
+                    ;;
+                completion)
+                    _values 'shell' bash zsh fish
+                    ;;
+                uninstall)
+                    _arguments '--keep-config[Keep config files]' '--yes[Skip confirmation]'
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_codecast "$@"'''
+
+
+def _completion_fish() -> str:
+    return '''\
+# codecast completions for fish
+
+set -l commands start stop restart status peers sessions token head webui update uninstall completion
+
+complete -c codecast -f
+complete -c codecast -n "not __fish_seen_subcommand_from $commands" -l version -d "Show version"
+complete -c codecast -n "not __fish_seen_subcommand_from $commands" -l help -d "Show help"
+complete -c codecast -n "not __fish_seen_subcommand_from $commands" -s c -l config -r -d "Config file"
+
+complete -c codecast -n "not __fish_seen_subcommand_from $commands" -a start -d "Start the daemon"
+complete -c codecast -n "not __fish_seen_subcommand_from $commands" -a stop -d "Stop the daemon"
+complete -c codecast -n "not __fish_seen_subcommand_from $commands" -a restart -d "Restart the daemon"
+complete -c codecast -n "not __fish_seen_subcommand_from $commands" -a status -d "Show component status"
+complete -c codecast -n "not __fish_seen_subcommand_from $commands" -a peers -d "List configured peers"
+complete -c codecast -n "not __fish_seen_subcommand_from $commands" -a sessions -d "List active sessions"
+complete -c codecast -n "not __fish_seen_subcommand_from $commands" -a token -d "Manage auth tokens"
+complete -c codecast -n "not __fish_seen_subcommand_from $commands" -a head -d "Start the head node"
+complete -c codecast -n "not __fish_seen_subcommand_from $commands" -a webui -d "Start/stop the web UI"
+complete -c codecast -n "not __fish_seen_subcommand_from $commands" -a update -d "Git pull and restart"
+complete -c codecast -n "not __fish_seen_subcommand_from $commands" -a uninstall -d "Remove codecast data"
+complete -c codecast -n "not __fish_seen_subcommand_from $commands" -a completion -d "Generate completion script"
+
+complete -c codecast -n "__fish_seen_subcommand_from token" -a "generate list revoke"
+complete -c codecast -n "__fish_seen_subcommand_from webui" -a "start stop status"
+complete -c codecast -n "__fish_seen_subcommand_from head" -a "start stop"
+complete -c codecast -n "__fish_seen_subcommand_from completion" -a "bash zsh fish"
+complete -c codecast -n "__fish_seen_subcommand_from uninstall" -l keep-config -d "Keep config files"
+complete -c codecast -n "__fish_seen_subcommand_from uninstall" -s y -l yes -d "Skip confirmation"'''
+
+
 def _cmd_webui(args: argparse.Namespace) -> None:
     """Dispatch webui start / stop / status."""
     action = getattr(args, "webui_action", "start")
@@ -570,6 +911,8 @@ _COMMANDS: dict[str, callable] = {
     "head": _cmd_head,
     "bot": _cmd_head,
     "webui": _cmd_webui,
+    "uninstall": _cmd_uninstall,
+    "completion": _cmd_completion,
 }
 
 

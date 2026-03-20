@@ -1125,6 +1125,7 @@ class StartDaemonScreen(Screen):
     def _stop_daemon_only(self) -> None:
         """Stop daemon without popping screen (for restart)."""
         import signal as sig
+        import time
 
         from head.cli import _DAEMON_PID_FILE, _PORT_FILE, _pid_alive, _read_pid_file
 
@@ -1139,6 +1140,20 @@ class StartDaemonScreen(Screen):
                 subprocess.run(["pkill", "-f", "codecast-daemon"], check=False)
             except FileNotFoundError:
                 pass
+
+        # Wait for the process to die so the port is freed
+        if daemon_pid is not None and _pid_alive(daemon_pid):
+            for _ in range(50):  # up to 5 seconds
+                if not _pid_alive(daemon_pid):
+                    break
+                time.sleep(0.1)
+            else:
+                try:
+                    os.kill(daemon_pid, sig.SIGKILL)
+                    time.sleep(0.1)
+                except ProcessLookupError:
+                    pass
+
         _DAEMON_PID_FILE.unlink(missing_ok=True)
         _PORT_FILE.unlink(missing_ok=True)
 

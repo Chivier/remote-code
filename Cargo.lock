@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "codecast-daemon"
-version = "0.2.13"
+version = "0.2.16"
 dependencies = [
  "axum",
  "axum-server",
