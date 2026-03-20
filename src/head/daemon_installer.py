@@ -63,26 +63,97 @@ def get_expected_asset_name() -> str | None:
     return PLATFORM_ASSET_MAP.get((system, machine))
 
 
+def _download_with_curl(url: str, dest: Path, on_progress: Callable[[str], None] | None = None) -> bool:
+    """Try downloading with curl (handles redirects, proxies, TLS better)."""
+    curl = shutil.which("curl")
+    if not curl:
+        return False
+    if on_progress:
+        on_progress(f"Downloading with curl...")
+    try:
+        result = subprocess.run(
+            [curl, "-fSL", "--connect-timeout", "15", "--max-time", "120", "-o", str(dest), url],
+            capture_output=True,
+            text=True,
+            timeout=130,
+        )
+        if result.returncode != 0:
+            if on_progress:
+                on_progress(f"curl failed: {result.stderr.strip()[:200]}")
+            return False
+        if on_progress:
+            on_progress("Download complete")
+        return True
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        if on_progress:
+            on_progress(f"curl failed: {exc}")
+        return False
+
+
+def _download_with_wget(url: str, dest: Path, on_progress: Callable[[str], None] | None = None) -> bool:
+    """Try downloading with wget."""
+    wget = shutil.which("wget")
+    if not wget:
+        return False
+    if on_progress:
+        on_progress(f"Downloading with wget...")
+    try:
+        result = subprocess.run(
+            [wget, "-q", "--timeout=15", "-O", str(dest), url],
+            capture_output=True,
+            text=True,
+            timeout=130,
+        )
+        if result.returncode != 0:
+            if on_progress:
+                on_progress(f"wget failed: {result.stderr.strip()[:200]}")
+            return False
+        if on_progress:
+            on_progress("Download complete")
+        return True
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        if on_progress:
+            on_progress(f"wget failed: {exc}")
+        return False
+
+
+def _download_with_urllib(url: str, dest: Path, on_progress: Callable[[str], None] | None = None) -> bool:
+    """Fallback download using Python urllib."""
+    if on_progress:
+        on_progress("Downloading with urllib...")
+    try:
+        req = Request(url, headers={"User-Agent": "codecast-installer"})
+        with urlopen(req, timeout=60) as resp, open(dest, "wb") as f:
+            total = resp.headers.get("Content-Length")
+            downloaded = 0
+            chunk_size = 256 * 1024
+            while True:
+                chunk = resp.read(chunk_size)
+                if not chunk:
+                    break
+                f.write(chunk)
+                downloaded += len(chunk)
+                if on_progress and total:
+                    pct = int(downloaded / int(total) * 100)
+                    on_progress(f"Downloading... {pct}%")
+        if on_progress:
+            on_progress("Download complete")
+        return True
+    except Exception as exc:
+        if on_progress:
+            on_progress(f"urllib failed: {exc}")
+        return False
+
+
 def _download_url(url: str, dest: Path, on_progress: Callable[[str], None] | None = None) -> None:
-    """Download *url* to *dest* with optional progress callback."""
+    """Download *url* to *dest*, trying curl → wget → urllib."""
     if on_progress:
         on_progress(f"Downloading {url}")
-    req = Request(url, headers={"User-Agent": "codecast-installer"})
-    with urlopen(req, timeout=60) as resp, open(dest, "wb") as f:
-        total = resp.headers.get("Content-Length")
-        downloaded = 0
-        chunk_size = 256 * 1024
-        while True:
-            chunk = resp.read(chunk_size)
-            if not chunk:
-                break
-            f.write(chunk)
-            downloaded += len(chunk)
-            if on_progress and total:
-                pct = int(downloaded / int(total) * 100)
-                on_progress(f"Downloading... {pct}%")
-    if on_progress:
-        on_progress("Download complete")
+    for method in (_download_with_curl, _download_with_wget, _download_with_urllib):
+        dest.unlink(missing_ok=True)
+        if method(url, dest, on_progress):
+            return
+    raise OSError("All download methods failed")
 
 
 def download_from_release(

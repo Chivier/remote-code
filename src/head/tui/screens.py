@@ -892,32 +892,36 @@ class StartDaemonScreen(Screen):
             log_lines.append(msg)
             # Keep last 12 lines
             display = log_lines[-12:]
-            self.call_from_thread(log_widget.update, "\n".join(f"[dim]{l}[/dim]" for l in display))
-
-        def do_install() -> bool:
-            from head.daemon_installer import install_daemon
-
-            return install_daemon(on_progress=on_progress)
-
-        def on_done(success: bool) -> None:
-            self._installing = False
-            if success:
-                self.notify("Daemon installed successfully!")
-                log_widget.update("[green]Installation complete.[/green]")
-            else:
-                self.notify("Daemon installation failed.", severity="error")
-                log_widget.update("[red]Installation failed. Check log above.[/red]")
-            self._refresh_ui()
+            try:
+                self.app.call_from_thread(log_widget.update, "\n".join(f"[dim]{l}[/dim]" for l in display))
+            except Exception:
+                pass  # Screen may be gone
 
         import threading
 
         def _run() -> None:
             try:
-                result = do_install()
+                from head.daemon_installer import install_daemon
+
+                result = install_daemon(on_progress=on_progress)
             except Exception as exc:
                 on_progress(f"Error: {exc}")
                 result = False
-            self.call_from_thread(on_done, result)
+
+            def _finish() -> None:
+                self._installing = False
+                if result:
+                    self.notify("Daemon installed successfully!")
+                    log_widget.update("[green]Installation complete.[/green]")
+                else:
+                    self.notify("Daemon installation failed.", severity="error")
+                    log_widget.update("[red]Installation failed. Check log above.[/red]")
+                self._refresh_ui()
+
+            try:
+                self.app.call_from_thread(_finish)
+            except Exception:
+                pass
 
         threading.Thread(target=_run, daemon=True).start()
 
