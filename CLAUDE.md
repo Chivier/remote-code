@@ -345,14 +345,16 @@ All version files are kept in sync:
 
 **CI daemon build matrix** (`.github/workflows/release.yml`):
 
-| Asset name | Platform | Arch |
-|---|---|---|
-| `codecast-daemon-linux-x64` | Linux | x86_64 |
-| `codecast-daemon-linux-arm64` | Linux | aarch64 (cross-compiled) |
-| `codecast-daemon-macos-arm64` | macOS | Apple Silicon |
-| `codecast-daemon-macos-x64` | macOS | Intel |
-| `codecast-daemon-windows-x64.exe` | Windows | x86_64 |
-| `codecast-daemon-windows-arm64.exe` | Windows | aarch64 |
+| Asset name | Platform | Arch | Linking |
+|---|---|---|---|
+| `codecast-daemon-linux-x64` | Linux | x86_64 | musl (static) |
+| `codecast-daemon-linux-arm64` | Linux | aarch64 (cross-compiled) | musl (static) |
+| `codecast-daemon-macos-arm64` | macOS | Apple Silicon | dynamic |
+| `codecast-daemon-macos-x64` | macOS | Intel | dynamic |
+| `codecast-daemon-windows-x64.exe` | Windows | x86_64 | MSVC |
+| `codecast-daemon-windows-arm64.exe` | Windows | aarch64 | MSVC |
+
+Linux binaries are statically linked with musl — no glibc dependency, runs on any Linux distro.
 
 **TUI auto-install:** When the daemon binary is missing, the TUI downloads the matching asset from `github.com/Chivier/codecast/releases/download/vX.Y.Z/<asset>` and saves it to `~/.codecast/daemon/codecast-daemon`. If no pre-built binary exists for the platform, it falls back to building from source (installing Rust via rustup if needed). The platform→asset mapping lives in `src/head/daemon_installer.py:PLATFORM_ASSET_MAP` and must stay in sync with the CI matrix.
 

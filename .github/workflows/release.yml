@@ -54,13 +54,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ── Linux ──
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
+          # ── Linux (musl static binaries — no glibc dependency) ──
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-22.04
             binary: codecast-daemon-linux-x64
             cross: false
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-22.04
             binary: codecast-daemon-linux-arm64
             cross: true
           # ── macOS ──
@@ -94,14 +94,24 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      # Cross-compilation dependencies for Linux arm64
-      - name: Install cross-compilation tools (Linux arm64)
-        if: matrix.cross && matrix.target == 'aarch64-unknown-linux-gnu'
+      # musl toolchain for static Linux binaries
+      - name: Install musl tools (Linux x64)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          echo '[target.aarch64-unknown-linux-gnu]' >> ~/.cargo/config.toml
-          echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config.toml
+          sudo apt-get install -y musl-tools
+
+      # Cross-compilation dependencies for Linux arm64 (musl)
+      - name: Install cross-compilation tools (Linux arm64 musl)
+        if: matrix.cross && matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu
+          # Install aarch64 musl cross-compiler
+          sudo mkdir -p /usr/local/aarch64-linux-musl
+          curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz | sudo tar xz -C /usr/local --strip-components=1
+          echo '[target.aarch64-unknown-linux-musl]' >> ~/.cargo/config.toml
+          echo 'linker = "/usr/local/bin/aarch64-linux-musl-gcc"' >> ~/.cargo/config.toml
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
