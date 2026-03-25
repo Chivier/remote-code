@@ -43,6 +43,21 @@ def _gather_status(config_path: str) -> dict:
     claude_path = shutil.which("claude")
     codex_path = shutil.which("codex")
 
+    # Daemon version
+    daemon_version = ""
+    codecast_version = ""
+    try:
+        from head.daemon_installer import get_current_version, get_daemon_version
+        from head.peer_manager import resolve_daemon_binary
+
+        codecast_version = get_current_version()
+        binary = resolve_daemon_binary()
+        daemon_version = get_daemon_version(binary) if binary else ""
+    except Exception:
+        pass
+
+    version_mismatch = bool(daemon_version and codecast_version and daemon_version != codecast_version)
+
     # Bots
     bots: list[str] = []
     if config_path:
@@ -72,6 +87,9 @@ def _gather_status(config_path: str) -> dict:
         claude_path=claude_path,
         codex_path=codex_path,
         bots=bots,
+        daemon_version=daemon_version,
+        codecast_version=codecast_version,
+        version_mismatch=version_mismatch,
     )
 
 
@@ -88,6 +106,14 @@ def _render_status(info: dict) -> str:
         )
     else:
         lines.append("[bold]Daemon[/bold]  [dim](agent manager)[/dim]  [bold red]○ stopped[/bold red]")
+
+    if info.get("version_mismatch"):
+        lines.append(
+            f"         [bold yellow]⚠ Version mismatch![/bold yellow] "
+            f"daemon [bold]{info['daemon_version']}[/bold] ≠ "
+            f"codecast [bold]{info['codecast_version']}[/bold]  "
+            "[dim]Press [bold]d[/bold] to update[/dim]"
+        )
 
     # Head
     if info["head_running"]:

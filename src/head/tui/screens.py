@@ -360,8 +360,9 @@ class DashboardScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        """Auto-start the head node if bots are configured and it's not running."""
+        """Auto-start head and check daemon version on dashboard open."""
         self._auto_start_head()
+        self._check_daemon_version()
 
     def _auto_start_head(self) -> None:
         """Start the head node automatically if bots are configured and head is not running."""
@@ -396,6 +397,45 @@ class DashboardScreen(Screen):
             self.notify("Head node auto-started.")
         except Exception as exc:
             self.notify(f"Failed to auto-start head: {exc}", severity="error")
+
+    def _check_daemon_version(self) -> None:
+        """Check for daemon version mismatch in a background thread and notify."""
+        import threading
+
+        def _run() -> None:
+            try:
+                from head.daemon_installer import get_current_version, get_daemon_version
+                from head.peer_manager import resolve_daemon_binary
+                from head.process_monitor import daemon_healthy, read_port_file
+
+                binary = resolve_daemon_binary()
+                if not binary:
+                    return
+
+                codecast_ver = get_current_version()
+                daemon_ver = get_daemon_version(binary)
+                if not codecast_ver or not daemon_ver or codecast_ver == daemon_ver:
+                    return
+
+                port = read_port_file()
+                running = port is not None and daemon_healthy(port)
+
+                if running:
+                    msg = (
+                        f"Daemon version mismatch: {daemon_ver} → {codecast_ver}. "
+                        "Press [bold]d[/bold] to stop and update."
+                    )
+                else:
+                    msg = f"Daemon binary outdated: {daemon_ver} → {codecast_ver}. Press [bold]d[/bold] to update."
+
+                try:
+                    self.app.call_from_thread(self.notify, msg, severity="warning", timeout=10)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def action_toggle_daemon(self) -> None:
         self.app.push_screen(StartDaemonScreen(self.config_path))
