@@ -825,6 +825,7 @@ class TestFullMessageFlow:
     async def test_tool_use_then_text(self, bot, mock_router, mock_daemon):
         """Claude uses a tool then responds with text."""
         mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.update_tool_display("discord:100", "append")
 
         async def mock_send(*args, **kwargs):
             yield {"type": "tool_use", "tool": "Read", "message": "Reading file.py"}

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codecast"
-version = "0.2.18"
+version = "0.2.19"
 description = "Bot-based system to interact with Claude CLI on remote machines"
 readme = "README.md"
 license = "MIT"

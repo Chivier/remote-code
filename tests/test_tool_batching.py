@@ -281,6 +281,7 @@ class TestForwardMessageBatching:
         """A single tool_use event produces an activity message."""
         bot = make_bot(tool_batch_size=3)
         mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.update_tool_display("discord:100", "append")
 
         async def mock_stream(*a, **kw):
             yield _tool_event("Read", message="file.py")
@@ -305,6 +306,7 @@ class TestForwardMessageBatching:
         """Multiple tool events accumulate in a single activity message."""
         bot = make_bot(tool_batch_size=3)
         mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.update_tool_display("discord:100", "append")
 
         async def mock_stream(*a, **kw):
             yield _tool_event("Read", message="f1")
@@ -331,6 +333,7 @@ class TestForwardMessageBatching:
         """Activity message is finalized before text result is sent."""
         bot = make_bot(tool_batch_size=15)
         mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.update_tool_display("discord:100", "append")
 
         async def mock_stream(*a, **kw):
             yield _tool_event("Read", message="f1")
@@ -352,6 +355,7 @@ class TestForwardMessageBatching:
         """Multiple text events are each sent as individual messages."""
         bot = make_bot(tool_batch_size=15)
         mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.update_tool_display("discord:100", "append")
 
         async def mock_stream(*a, **kw):
             yield {"type": "text", "content": "First paragraph."}
@@ -372,6 +376,7 @@ class TestForwardMessageBatching:
         """Each error event produces its own message immediately."""
         bot = make_bot(tool_batch_size=15)
         mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.update_tool_display("discord:100", "append")
 
         async def mock_stream(*a, **kw):
             yield {"type": "error", "message": "err1"}
@@ -391,6 +396,7 @@ class TestForwardMessageBatching:
         """System init events produce individual messages."""
         bot = make_bot(tool_batch_size=15)
         mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.update_tool_display("discord:100", "append")
 
         async def mock_stream(*a, **kw):
             yield {"type": "system", "subtype": "init", "model": "claude-opus"}
@@ -407,6 +413,7 @@ class TestForwardMessageBatching:
         """Queued event produces its own message."""
         bot = make_bot(tool_batch_size=15)
         mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.update_tool_display("discord:100", "append")
 
         async def mock_stream(*a, **kw):
             yield {"type": "queued", "position": 2}
@@ -423,6 +430,7 @@ class TestForwardMessageBatching:
         """Tools appear in activity message before error message."""
         bot = make_bot(tool_batch_size=15)
         mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.update_tool_display("discord:100", "append")
 
         async def mock_stream(*a, **kw):
             yield _tool_event("Read", message="f1")
@@ -442,6 +450,7 @@ class TestForwardMessageBatching:
         """Activity message with tools appears before queued message."""
         bot = make_bot(tool_batch_size=15)
         mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.update_tool_display("discord:100", "append")
 
         async def mock_stream(*a, **kw):
             yield _tool_event("Read", message="f1")
@@ -460,6 +469,7 @@ class TestForwardMessageBatching:
         """Tool activity message appears before system event message."""
         bot = make_bot(tool_batch_size=15)
         mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.update_tool_display("discord:100", "append")
 
         async def mock_stream(*a, **kw):
             yield _tool_event("Bash", message="npm install")
@@ -479,6 +489,7 @@ class TestForwardMessageBatching:
         """All tool events accumulate in a single activity message regardless of count."""
         bot = make_bot(tool_batch_size=3)
         mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.update_tool_display("discord:100", "append")
 
         async def mock_stream(*a, **kw):
             for i in range(7):
@@ -505,6 +516,7 @@ class TestForwardMessageBatching:
         """
         bot = make_bot(tool_batch_size=15)
         mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.update_tool_display("discord:100", "append")
 
         async def mock_stream(*a, **kw):
             yield _tool_event("Read", message="file1")
@@ -534,6 +546,7 @@ class TestForwardMessageBatching:
         """With any batch_size, all consecutive tools go into one activity message."""
         bot = make_bot(tool_batch_size=1)
         mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.update_tool_display("discord:100", "append")
 
         async def mock_stream(*a, **kw):
             yield _tool_event("Read", message="f1")
@@ -556,6 +569,7 @@ class TestForwardMessageBatching:
         """result events update session state but don't produce user-visible messages."""
         bot = make_bot(tool_batch_size=15)
         mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.update_tool_display("discord:100", "append")
 
         async def mock_stream(*a, **kw):
             yield {"type": "result", "session_id": "sdk-999"}
@@ -572,6 +586,7 @@ class TestForwardMessageBatching:
         """ping events are silently ignored."""
         bot = make_bot(tool_batch_size=15)
         mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.update_tool_display("discord:100", "append")
 
         async def mock_stream(*a, **kw):
             yield {"type": "ping"}
@@ -591,6 +606,7 @@ class TestForwardMessageBatching:
         """Tool activity message is finalized at stream end even without text event."""
         bot = make_bot(tool_batch_size=15)
         mock_router.register("discord:100", "gpu-1", "/path", "sess-001")
+        mock_router.update_tool_display("discord:100", "append")
 
         async def mock_stream(*a, **kw):
             yield _tool_event("Read", message="f1")

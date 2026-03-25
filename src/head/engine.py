@@ -547,21 +547,22 @@ class BotEngine:
             await self.send_message(channel_id, format_error("Failed to set mode"))
 
     async def cmd_tool_display(self, channel_id: str, args: list[str]) -> None:
-        """/tool-display <append|batch> - Switch tool display mode."""
+        """/tool-display <timer|append|batch> - Switch tool display mode."""
         if not args:
             await self.send_message(
                 channel_id,
-                "Usage: `/tool-display <append|batch>`\n"
-                "  **append** - Show each tool call progressively (default)\n"
+                "Usage: `/tool-display <timer|append|batch>`\n"
+                "  **timer** - Show working timer, send all results at end (default)\n"
+                "  **append** - Show each tool call progressively\n"
                 "  **batch** - Accumulate tool calls, show summary at end",
             )
             return
 
         mode = args[0].lower()
-        if mode not in ("append", "batch"):
+        if mode not in ("timer", "append", "batch"):
             await self.send_message(
                 channel_id,
-                "Invalid tool display mode. Use: `append` or `batch`",
+                "Invalid tool display mode. Use: `timer`, `append`, or `batch`",
             )
             return
 
@@ -1407,121 +1408,221 @@ After `/start` or `/resume`, send any message to interact with Claude."""
                     await self.send_message(channel_id, format_error(f"File upload failed: {e}"))
                     return
 
-            # Activity message state (tools + thinking)
-            activity_msg: Optional[MessageHandle] = None
-            activity_lines: list[str] = []  # Tool call summary lines
-            batch_lines: list[str] = []  # Accumulated tool lines for batch mode
-            thinking_buf: str = ""  # Accumulated partial text for thinking display
-            last_activity_update = time.time()
-            tool_display = session.tool_display  # "append" or "batch"
+            tool_display = session.tool_display  # "timer", "append", or "batch"
 
-            async def update_activity():
-                """Edit or create the activity message with current tool lines + thinking."""
-                nonlocal activity_msg, activity_lines, last_activity_update
-                content = format_activity_message(activity_lines, thinking_buf, cursor=True)
-                if not content.strip():
-                    return
-                # If content exceeds Discord limit, finalize current and start new
-                if len(content) > 1900 and activity_msg is not None:
-                    await finalize_activity()
-                    content = format_activity_message(activity_lines, thinking_buf, cursor=True)
-                if activity_msg is None:
-                    activity_msg = await self.send_message(channel_id, content)
-                else:
-                    await self.edit_message(activity_msg, content)
+            # ── Timer mode: show "Working Xs" with periodic edits, send all text at end ──
+            if tool_display == "timer":
+                timer_msg: Optional[MessageHandle] = None
+                timer_start = time.time()
+                result_texts: list[str] = []
+                timer_done = False
+
+                def _format_elapsed() -> str:
+                    elapsed = int(time.time() - timer_start)
+                    mins, secs = divmod(elapsed, 60)
+                    return f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+
+                async def _timer_loop() -> None:
+                    """Edit the timer message every 30s."""
+                    nonlocal timer_msg
+                    while not timer_done:
+                        await asyncio.sleep(30)
+                        if timer_done or timer_msg is None:
+                            break
+                        try:
+                            await self.edit_message(timer_msg, f"Working {_format_elapsed()}")
+                        except Exception:
+                            pass
+
+                timer_task: Optional[asyncio.Task] = None
+
+                async for event in self.daemon.send_message(local_port, session.daemon_session_id, text):
+                    event_type = event.get("type", "")
+
+                    if event_type == "ping":
+                        continue
+
+                    # tool_use / partial — silently consumed, just ensure timer is running
+                    if event_type in ("tool_use", "partial"):
+                        if timer_msg is None:
+                            timer_msg = await self.send_message(channel_id, f"Working 0s")
+                            timer_task = asyncio.create_task(_timer_loop())
+                        continue
+
+                    if event_type == "text":
+                        content = event.get("content", "")
+                        if content:
+                            result_texts.append(content)
+                        continue
+
+                    if event_type == "result":
+                        sdk_session_id = event.get("session_id")
+                        if sdk_session_id:
+                            self.router.update_sdk_session(channel_id, sdk_session_id)
+
+                    elif event_type == "system":
+                        model = event.get("model")
+                        if model and event.get("subtype") == "init":
+                            session = self.router.resolve(channel_id)
+                            daemon_sid = session.daemon_session_id if session else ""
+                            if daemon_sid not in self._init_shown:
+                                self._init_shown.add(daemon_sid)
+                                mode_str = display_mode(session.mode) if session else "unknown"
+                                name_str = f" | Session: **{session.name}**" if session and session.name else ""
+                                await self.send_message(
+                                    channel_id,
+                                    f"Connected to **{model}** | Mode: **{mode_str}**{name_str}",
+                                )
+
+                    elif event_type == "queued":
+                        position = event.get("position", "?")
+                        await self.send_message(
+                            channel_id,
+                            f"Message queued (position: {position}). Claude is busy with a previous request.",
+                        )
+                        return
+
+                    elif event_type == "error":
+                        error_msg = event.get("message", "Unknown error")
+                        await self.send_message(channel_id, format_error(error_msg))
+
+                # Stream finished — stop timer, send results
+                timer_done = True
+                if timer_task is not None:
+                    timer_task.cancel()
+                    try:
+                        await timer_task
+                    except asyncio.CancelledError:
+                        pass
+
+                if timer_msg is not None:
+                    try:
+                        await self.edit_message(timer_msg, f"Done in {_format_elapsed()}")
+                    except Exception:
+                        pass
+
+                if result_texts:
+                    full_text = "\n\n".join(result_texts)
+                    for chunk in split_message(full_text):
+                        await self.send_message(channel_id, chunk)
+                    if self.file_forward:
+                        await self._detect_and_forward_files(channel_id, session.machine_id, full_text)
+
+            # ── Append / Batch mode: progressive tool display ──
+            else:
+                activity_msg: Optional[MessageHandle] = None
+                activity_lines: list[str] = []
+                batch_lines: list[str] = []
+                thinking_buf: str = ""
                 last_activity_update = time.time()
 
-            async def finalize_activity():
-                """Remove cursor/thinking from activity message, freeze it."""
-                nonlocal activity_msg, activity_lines
-                if activity_msg is not None and activity_lines:
-                    final = format_activity_message(activity_lines, "", cursor=False)
-                    await self.edit_message(activity_msg, final)
-                activity_msg = None
-                activity_lines = []
-
-            async def flush_batch():
-                """Send accumulated batch tool lines as a single summary message."""
-                nonlocal batch_lines
-                if batch_lines:
-                    summary = format_activity_message(batch_lines, "", cursor=False)
-                    if summary.strip():
-                        await self.send_message(channel_id, summary)
-                    batch_lines = []
-
-            async for event in self.daemon.send_message(local_port, session.daemon_session_id, text):
-                event_type = event.get("type", "")
-
-                if event_type == "ping":
-                    continue
-
-                if event_type == "tool_use":
-                    line = format_tool_line(event)
-                    thinking_buf = ""  # Reset thinking when a new tool starts
-                    if tool_display == "batch":
-                        batch_lines.append(line)
+                async def update_activity():
+                    """Edit or create the activity message with current tool lines + thinking."""
+                    nonlocal activity_msg, activity_lines, last_activity_update
+                    content = format_activity_message(activity_lines, thinking_buf, cursor=True)
+                    if not content.strip():
+                        return
+                    if len(content) > 1900 and activity_msg is not None:
+                        await finalize_activity()
+                        content = format_activity_message(activity_lines, thinking_buf, cursor=True)
+                    if activity_msg is None:
+                        activity_msg = await self.send_message(channel_id, content)
                     else:
-                        activity_lines.append(line)
-                        await update_activity()
+                        await self.edit_message(activity_msg, content)
+                    last_activity_update = time.time()
 
-                elif event_type == "partial":
-                    content = event.get("content", "")
-                    if content:
-                        thinking_buf += content
-                        now = time.time()
-                        if now - last_activity_update >= STREAM_UPDATE_INTERVAL:
+                async def finalize_activity():
+                    """Remove cursor/thinking from activity message, freeze it."""
+                    nonlocal activity_msg, activity_lines
+                    if activity_msg is not None:
+                        if activity_lines:
+                            final = format_activity_message(activity_lines, "", cursor=False)
+                            await self.edit_message(activity_msg, final)
+                        else:
+                            try:
+                                await self.adapter.delete_message(activity_msg)
+                            except Exception:
+                                pass
+                    activity_msg = None
+                    activity_lines = []
+
+                async def flush_batch():
+                    """Send accumulated batch tool lines as a single summary message."""
+                    nonlocal batch_lines
+                    if batch_lines:
+                        summary = format_activity_message(batch_lines, "", cursor=False)
+                        if summary.strip():
+                            await self.send_message(channel_id, summary)
+                        batch_lines = []
+
+                async for event in self.daemon.send_message(local_port, session.daemon_session_id, text):
+                    event_type = event.get("type", "")
+
+                    if event_type == "ping":
+                        continue
+
+                    if event_type == "tool_use":
+                        line = format_tool_line(event)
+                        thinking_buf = ""
+                        if tool_display == "batch":
+                            batch_lines.append(line)
+                        else:
+                            activity_lines.append(line)
                             await update_activity()
 
-                elif event_type == "text":
-                    content = event.get("content", "")
-                    if content:
-                        # Finalize activity message before sending result text
-                        thinking_buf = ""
-                        await finalize_activity()
-                        chunks = split_message(content)
-                        for chunk in chunks:
-                            await self.send_message(channel_id, chunk)
+                    elif event_type == "partial":
+                        content = event.get("content", "")
+                        if content:
+                            thinking_buf += content
+                            now = time.time()
+                            if now - last_activity_update >= STREAM_UPDATE_INTERVAL:
+                                await update_activity()
 
-                        # Detect and forward files from completed text
-                        if self.file_forward:
-                            await self._detect_and_forward_files(channel_id, session.machine_id, content)
+                    elif event_type == "text":
+                        content = event.get("content", "")
+                        if content:
+                            thinking_buf = ""
+                            await finalize_activity()
+                            chunks = split_message(content)
+                            for chunk in chunks:
+                                await self.send_message(channel_id, chunk)
+                            if self.file_forward:
+                                await self._detect_and_forward_files(channel_id, session.machine_id, content)
 
-                elif event_type == "result":
-                    sdk_session_id = event.get("session_id")
-                    if sdk_session_id:
-                        self.router.update_sdk_session(channel_id, sdk_session_id)
+                    elif event_type == "result":
+                        sdk_session_id = event.get("session_id")
+                        if sdk_session_id:
+                            self.router.update_sdk_session(channel_id, sdk_session_id)
 
-                elif event_type == "system":
-                    model = event.get("model")
-                    if model and event.get("subtype") == "init":
-                        session = self.router.resolve(channel_id)
-                        daemon_sid = session.daemon_session_id if session else ""
-                        if daemon_sid not in self._init_shown:
-                            self._init_shown.add(daemon_sid)
-                            mode_str = display_mode(session.mode) if session else "unknown"
-                            name_str = f" | Session: **{session.name}**" if session and session.name else ""
-                            await self.send_message(
-                                channel_id,
-                                f"Connected to **{model}** | Mode: **{mode_str}**{name_str}",
-                            )
+                    elif event_type == "system":
+                        model = event.get("model")
+                        if model and event.get("subtype") == "init":
+                            session = self.router.resolve(channel_id)
+                            daemon_sid = session.daemon_session_id if session else ""
+                            if daemon_sid not in self._init_shown:
+                                self._init_shown.add(daemon_sid)
+                                mode_str = display_mode(session.mode) if session else "unknown"
+                                name_str = f" | Session: **{session.name}**" if session and session.name else ""
+                                await self.send_message(
+                                    channel_id,
+                                    f"Connected to **{model}** | Mode: **{mode_str}**{name_str}",
+                                )
 
-                elif event_type == "queued":
-                    position = event.get("position", "?")
-                    await self.send_message(
-                        channel_id,
-                        f"Message queued (position: {position}). Claude is busy with a previous request.",
-                    )
-                    return
+                    elif event_type == "queued":
+                        position = event.get("position", "?")
+                        await self.send_message(
+                            channel_id,
+                            f"Message queued (position: {position}). Claude is busy with a previous request.",
+                        )
+                        return
 
-                elif event_type == "error":
-                    error_msg = event.get("message", "Unknown error")
-                    await self.send_message(channel_id, format_error(error_msg))
+                    elif event_type == "error":
+                        error_msg = event.get("message", "Unknown error")
+                        await self.send_message(channel_id, format_error(error_msg))
 
-            # Finalize any remaining activity message
-            thinking_buf = ""
-            await finalize_activity()
-            # In batch mode, send accumulated tool summary
-            await flush_batch()
+                thinking_buf = ""
+                await finalize_activity()
+                await flush_batch()
 
         except DaemonConnectionError as e:
             await self.send_message(

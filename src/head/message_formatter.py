@@ -185,7 +185,7 @@ def format_status(session: Any, queue_stats: dict[str, Any] | None = None) -> st
         f"Machine: **{session.machine_id}**",
         f"Path: `{session.path}`",
         f"Mode: **{mode_str}**",
-        f"Tool Display: **{getattr(session, 'tool_display', 'append')}**",
+        f"Tool Display: **{getattr(session, 'tool_display', 'timer')}**",
         f"Status: **{session.status}**",
         f"Session ID: `{session.daemon_session_id}`",
     ]
