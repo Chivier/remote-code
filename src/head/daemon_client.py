@@ -83,20 +83,20 @@ class DaemonClient:
 
     # ─── Session Management ───
 
-    async def create_session(self, local_port: int, path: str, mode: str = "auto") -> str:
+    async def create_session(self, local_port: int, path: str, mode: str = "auto", model: str | None = None) -> str:
         """
         Create a new Claude session on the remote machine.
 
         Returns:
             sessionId: The daemon's session ID.
         """
+        params = {"path": path, "mode": mode}
+        if model:
+            params["model"] = model
         result = await self._rpc_call(
             local_port,
             "session.create",
-            {
-                "path": path,
-                "mode": mode,
-            },
+            params,
         )
         session_id: str = result["sessionId"]
         logger.info(f"Created session {session_id} at {path}")
@@ -201,6 +201,18 @@ class DaemonClient:
             {
                 "sessionId": session_id,
                 "mode": mode,
+            },
+        )
+        return bool(result.get("ok", False))
+
+    async def set_model(self, local_port: int, session_id: str, model: str | None = None) -> bool:
+        """Set the model for a session."""
+        result = await self._rpc_call(
+            local_port,
+            "session.set_model",
+            {
+                "sessionId": session_id,
+                "model": model,
             },
         )
         return bool(result.get("ok", False))

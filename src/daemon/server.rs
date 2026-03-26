@@ -66,6 +66,7 @@ async fn handle_rpc(
         "session.destroy" => handle_destroy_session(&state, &req).await,
         "session.list" => handle_list_sessions(&state, &req).await,
         "session.set_mode" => handle_set_mode(&state, &req).await,
+        "session.set_model" => handle_set_model(&state, &req).await,
         "session.interrupt" => handle_interrupt_session(&state, &req).await,
         "session.queue_stats" => handle_queue_stats(&state, &req).await,
         "session.reconnect" => handle_reconnect(&state, &req).await,
@@ -98,6 +99,11 @@ async fn handle_create_session(state: &AppState, req: &RpcRequest) -> Result<Rpc
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
 
+    let model: Option<String> = params
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
     // Expand ~ to home directory
     let project_path = expand_tilde(path);
 
@@ -109,7 +115,7 @@ async fn handle_create_session(state: &AppState, req: &RpcRequest) -> Result<Rpc
 
     let session_id = state
         .session_pool
-        .create(&project_path, mode)
+        .create(&project_path, mode, model)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -311,6 +317,22 @@ async fn handle_set_mode(state: &AppState, req: &RpcRequest) -> Result<RpcRespon
         .and_then(|v| serde_json::from_value(v.clone()).map_err(|_| "Invalid mode"))?;
 
     let ok = state.session_pool.set_mode(session_id, mode).await?;
+    Ok(RpcResponse::success(json!({ "ok": ok }), req.id.clone()))
+}
+
+async fn handle_set_model(state: &AppState, req: &RpcRequest) -> Result<RpcResponse, String> {
+    let params = req.params.as_ref().ok_or("Missing params")?;
+    let session_id = params
+        .get("sessionId")
+        .and_then(|v| v.as_str())
+        .ok_or("Missing required params: sessionId")?;
+
+    let model = params
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let ok = state.session_pool.set_model(session_id, model).await?;
     Ok(RpcResponse::success(json!({ "ok": ok }), req.id.clone()))
 }
 

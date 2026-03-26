@@ -604,6 +604,10 @@ class DiscordAdapter:
             result_texts: list[str] = []
 
             async for event in engine.daemon.send_message(local_port, session.daemon_session_id, text):
+                # Check if stop was requested
+                if channel_id in engine._stop_requested:
+                    break
+
                 event_type = event.get("type", "")
 
                 if event_type == "ping":
@@ -873,6 +877,18 @@ class DiscordAdapter:
                 except Exception as e:
                     await self.send_message(channel_id, format_error(str(e)))
 
+        # ------------------------------------------------------------------ /model
+        @tree.command(name="model", description="Switch Claude model")
+        @app_commands.describe(model="Model name (e.g. claude-sonnet-4-20250514)")
+        async def slash_model(interaction: discord.Interaction, model: str) -> None:
+            await interaction.response.defer()
+            channel_id = self._defer_and_register(interaction)
+            if self._on_input:
+                try:
+                    await self._on_input(channel_id, f"/model {model}", interaction.user.id, None)
+                except Exception as e:
+                    await self.send_message(channel_id, format_error(str(e)))
+
         # ------------------------------------------------------------------ /tool-display
         @tree.command(name="tool-display", description="Switch tool display mode")
         @app_commands.describe(mode="Tool display mode")
@@ -923,6 +939,17 @@ class DiscordAdapter:
             if self._on_input:
                 try:
                     await self._on_input(channel_id, "/interrupt", interaction.user.id, None)
+                except Exception as e:
+                    await self.send_message(channel_id, format_error(str(e)))
+
+        # ------------------------------------------------------------------ /stop
+        @tree.command(name="stop", description="Stop Claude's current response")
+        async def slash_stop(interaction: discord.Interaction) -> None:
+            await interaction.response.defer()
+            channel_id = self._defer_and_register(interaction)
+            if self._on_input:
+                try:
+                    await self._on_input(channel_id, "/stop", interaction.user.id, None)
                 except Exception as e:
                     await self.send_message(channel_id, format_error(str(e)))
 

@@ -124,6 +124,8 @@ class BotEngine:
             self.file_forward = FileForwardMatcher(config.file_forward)
         # Track which channels are currently streaming (to prevent concurrent sends)
         self._streaming: set[str] = set()
+        # Track which channels have requested a stop of the current stream
+        self._stop_requested: set[str] = set()
         # Track which sessions have already shown the "Connected to" init message
         self._init_shown: set[str] = set()
 
@@ -234,9 +236,11 @@ class BotEngine:
                 await self.cmd_rm_session(channel_id, args)
             elif cmd == "/mode":
                 await self.cmd_mode(channel_id, args)
+            elif cmd == "/model":
+                await self.cmd_model(channel_id, args)
             elif cmd == "/status":
                 await self.cmd_status(channel_id)
-            elif cmd == "/interrupt":
+            elif cmd in ("/interrupt", "/stop"):
                 await self.cmd_interrupt(channel_id)
             elif cmd == "/rename":
                 await self.cmd_rename(channel_id, args)
@@ -356,6 +360,8 @@ class BotEngine:
             self.config.default_mode,
         )
 
+        model_str = getattr(self.config, "default_model", None) or "default"
+
         await self.send_message(
             channel_id,
             f"\u2705 **Session ready**\n"
@@ -364,6 +370,7 @@ class BotEngine:
             f"📂 **Path:** `{path}`\n"
             f"🏷\ufe0f **Name:** {name}\n"
             f"🔐 **Mode:** {display_mode(self.config.default_mode)}\n"
+            f"\U0001f9e0 **Model:** {model_str}\n"
             f"🆔 `{daemon_session_id}`\n"
             f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
             f"\u2328\ufe0f Send a message to start chatting with Claude.",
@@ -546,6 +553,35 @@ class BotEngine:
         else:
             await self.send_message(channel_id, format_error("Failed to set mode"))
 
+    async def cmd_model(self, channel_id: str, args: list[str]) -> None:
+        """/model <model_name> - Switch Claude model."""
+        if not args:
+            await self.send_message(
+                channel_id,
+                "Usage: `/model <model_name>`\n"
+                "Example: `/model claude-sonnet-4-20250514`\n\n"
+                "Common models:\n"
+                "  `claude-sonnet-4-20250514` — Claude Sonnet 4\n"
+                "  `claude-opus-4-20250115` — Claude Opus 4\n"
+                "  `claude-haiku-3-5-20241022` — Claude Haiku 3.5",
+            )
+            return
+
+        model = args[0]
+
+        session = self.router.resolve(channel_id)
+        if not session:
+            await self.send_message(channel_id, "\u26a0\ufe0f No active session. Use `/start` first.")
+            return
+
+        local_port = await self.ssh.ensure_tunnel(session.machine_id)
+        ok = await self.daemon.set_model(local_port, session.daemon_session_id, model)
+
+        if ok:
+            await self.send_message(channel_id, f"\U0001f9e0 Model set to **{model}**")
+        else:
+            await self.send_message(channel_id, format_error("Failed to set model"))
+
     async def cmd_tool_display(self, channel_id: str, args: list[str]) -> None:
         """/tool-display <timer|append|batch> - Switch tool display mode."""
         if not args:
@@ -591,7 +627,11 @@ class BotEngine:
         await self.send_message(channel_id, format_status(session, queue_stats))
 
     async def cmd_interrupt(self, channel_id: str) -> None:
-        """/interrupt - Interrupt Claude's current operation."""
+        """/interrupt or /stop - Interrupt Claude's current operation."""
+        # Signal any active stream to stop
+        if channel_id in self._streaming:
+            self._stop_requested.add(channel_id)
+
         session = self.router.resolve(channel_id)
         if not session:
             await self.send_message(channel_id, "\u26a0\ufe0f No active session. Use `/start` first.")
@@ -1280,7 +1320,10 @@ class BotEngine:
 `/rm <peer> <path>` - Destroy session(s) by machine and path
 `/rm-session <name_or_id>` - Destroy a specific session by name or ID
 `/mode <auto|code|plan|ask>` - Switch permission mode
+`/model <model_name>` - Switch Claude model
 `/tool-display <append|batch>` - Switch tool display mode
+`/stop` - Stop Claude's current response
+`/interrupt` - Interrupt Claude's current operation
 `/rename <new_name>` - Rename current session
 `/status` - Show current session info
 `/health [peer]` - Check daemon health
@@ -1308,21 +1351,42 @@ After `/start` or `/resume`, send any message to interact with Claude."""
         """
         Upload file_refs to the remote machine via SCP and replace
         <file_ref>file_id</file_ref> markers with actual remote paths.
+
+        For text files (.txt, .md, .markdown), reads content and appends
+        it inline instead of uploading.
         """
         if not file_refs:
             return text
 
-        path_mapping = await self.ssh.upload_files(machine_id, file_refs)
-        for file_id, remote_path in path_mapping.items():
-            # Support both old and new marker formats for backwards compatibility
-            text = text.replace(
-                f"<file_ref>{file_id}</file_ref>",
-                remote_path,
-            )
-            text = text.replace(
-                f"<discord_file>{file_id}</discord_file>",
-                remote_path,
-            )
+        # Separate text files (content to inline) from other files (to upload)
+        text_files = []
+        upload_files = []
+        for ref in file_refs:
+            ext = Path(ref.original_name).suffix.lower()
+            if ext in (".txt", ".md", ".markdown"):
+                text_files.append(ref)
+            else:
+                upload_files.append(ref)
+
+        # For text files, read content and append to message
+        for ref in text_files:
+            try:
+                content = Path(ref.local_path).read_text(encoding="utf-8", errors="replace")
+                # Remove the file marker from text
+                text = text.replace(f"<file_ref>{ref.file_id}</file_ref>", "")
+                text = text.replace(f"<discord_file>{ref.file_id}</discord_file>", "")
+                # Append file content
+                text += f"\n\n--- {ref.original_name} ---\n{content}"
+            except Exception as e:
+                logger.warning(f"Failed to read text file {ref.original_name}: {e}")
+
+        # Upload remaining files normally
+        if upload_files:
+            path_mapping = await self.ssh.upload_files(machine_id, upload_files)
+            for file_id, remote_path in path_mapping.items():
+                text = text.replace(f"<file_ref>{file_id}</file_ref>", remote_path)
+                text = text.replace(f"<discord_file>{file_id}</discord_file>", remote_path)
+
         return text
 
     async def _detect_and_forward_files(self, channel_id: str, machine_id: str, text: str) -> None:
@@ -1437,6 +1501,9 @@ After `/start` or `/resume`, send any message to interact with Claude."""
                 timer_task: Optional[asyncio.Task] = None
 
                 async for event in self.daemon.send_message(local_port, session.daemon_session_id, text):
+                    if channel_id in self._stop_requested:
+                        break
+
                     event_type = event.get("type", "")
 
                     if event_type == "ping":
@@ -1556,6 +1623,9 @@ After `/start` or `/resume`, send any message to interact with Claude."""
                         batch_lines = []
 
                 async for event in self.daemon.send_message(local_port, session.daemon_session_id, text):
+                    if channel_id in self._stop_requested:
+                        break
+
                     event_type = event.get("type", "")
 
                     if event_type == "ping":
@@ -1635,5 +1705,6 @@ After `/start` or `/resume`, send any message to interact with Claude."""
         finally:
             await self.adapter.stop_typing(channel_id)
             self._streaming.discard(channel_id)
+            self._stop_requested.discard(channel_id)
             if self.file_forward:
                 self.file_forward.cleanup(channel_id)

@@ -51,7 +51,12 @@ impl SessionPool {
 
     /// Create a new session (lightweight — just registers session state).
     /// No Claude CLI process is spawned until a message is sent.
-    pub async fn create(&self, path: &str, mode: PermissionMode) -> Result<String, String> {
+    pub async fn create(
+        &self,
+        path: &str,
+        mode: PermissionMode,
+        model: Option<String>,
+    ) -> Result<String, String> {
         // Resolve path: expand ~ and handle bare project names
         let resolved = if path.starts_with('/') || path.starts_with('~') {
             path.to_string()
@@ -88,7 +93,7 @@ impl SessionPool {
             process: None,
             queue: MessageQueue::new(),
             processing: false,
-            model: None,
+            model,
         };
 
         self.sessions
@@ -123,6 +128,7 @@ impl SessionPool {
         let path = session.path.clone();
         let mode = session.mode;
         let sdk_session_id = session.sdk_session_id.clone();
+        let model = session.model.clone();
 
         session.processing = true;
         session.status = SessionStatus::Busy;
@@ -143,6 +149,7 @@ impl SessionPool {
             path,
             mode,
             sdk_session_id,
+            model,
             tx,
         ));
 
@@ -197,6 +204,20 @@ impl SessionPool {
         info!(
             "[SessionPool] Mode changed to {:?} for session {}",
             mode, session_id
+        );
+        Ok(true)
+    }
+
+    /// Set the model for a session
+    pub async fn set_model(&self, session_id: &str, model: Option<String>) -> Result<bool, String> {
+        let mut sessions = self.sessions.lock().await;
+        let session = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| format!("Session not found: {}", session_id))?;
+        session.model = model.clone();
+        info!(
+            "[SessionPool] Model changed to {:?} for session {}",
+            model, session_id
         );
         Ok(true)
     }
@@ -334,6 +355,7 @@ async fn send_sigterm_then_sigkill(child: &mut Child, timeout_ms: u64) {
 
 /// Run a single Claude CLI invocation and stream events to `tx`.
 /// Returns `true` if the process completed successfully.
+#[allow(clippy::too_many_arguments)]
 async fn run_claude_process(
     sessions: &Arc<Mutex<HashMap<String, InternalSession>>>,
     session_id: &str,
@@ -341,6 +363,7 @@ async fn run_claude_process(
     path: &str,
     mode: PermissionMode,
     sdk_session_id: Option<&str>,
+    model: Option<&str>,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
     // Build CLI arguments
@@ -355,6 +378,11 @@ async fn run_claude_process(
 
     for flag in mode.to_cli_flags() {
         args.push(flag.to_string());
+    }
+
+    if let Some(m) = model {
+        args.push("--model".to_string());
+        args.push(m.to_string());
     }
 
     if let Some(sid) = sdk_session_id {
@@ -535,6 +563,7 @@ async fn run_claude_process(
 
 /// Process a message and then drain the queue (loop-based, no recursion).
 /// This runs as a background tokio task.
+#[allow(clippy::too_many_arguments)]
 async fn process_message_loop(
     sessions: Arc<Mutex<HashMap<String, InternalSession>>>,
     session_id: String,
@@ -542,6 +571,7 @@ async fn process_message_loop(
     initial_path: String,
     initial_mode: PermissionMode,
     initial_sdk_session_id: Option<String>,
+    initial_model: Option<String>,
     tx: mpsc::Sender<StreamEvent>,
 ) {
     // Process the initial message
@@ -552,6 +582,7 @@ async fn process_message_loop(
         &initial_path,
         initial_mode,
         initial_sdk_session_id.as_deref(),
+        initial_model.as_deref(),
         &tx,
     )
     .await;
@@ -594,13 +625,14 @@ async fn process_message_loop(
         };
 
         // Get current session state for the next message
-        let (path, mode, sdk_sid) = {
+        let (path, mode, sdk_sid, model) = {
             let sessions_guard = sessions.lock().await;
             if let Some(session) = sessions_guard.get(&session_id) {
                 (
                     session.path.clone(),
                     session.mode,
                     session.sdk_session_id.clone(),
+                    session.model.clone(),
                 )
             } else {
                 break;
@@ -630,6 +662,7 @@ async fn process_message_loop(
             &path,
             mode,
             sdk_sid.as_deref(),
+            model.as_deref(),
             &buf_tx,
         )
         .await;
