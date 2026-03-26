@@ -121,10 +121,12 @@ def format_session_info(session: Any) -> str:
         # Session from SessionRouter
         mode_str = display_mode(session.mode)
         name_str = f" **{session.name}**" if session.name else ""
+        cli_type = getattr(session, "cli_type", "claude")
+        cli_str = f" [{cli_type}]" if cli_type != "claude" else ""
         return (
             f"{status_icon}{name_str} `{session.daemon_session_id}` "
             f"**{session.machine_id}**:`{session.path}` "
-            f"[{mode_str}] ({session.status})"
+            f"[{mode_str}]{cli_str} ({session.status})"
         )
     else:
         # Session info dict from daemon
@@ -179,11 +181,13 @@ def format_status(session: Any, queue_stats: dict[str, Any] | None = None) -> st
     """Format session status for /status command."""
     mode_str = display_mode(session.mode)
     name_str = session.name if session.name else "(unnamed)"
+    cli_type = getattr(session, "cli_type", "claude")
     lines = [
         f"**Session Status**",
         f"Name: **{name_str}**",
         f"Machine: **{session.machine_id}**",
         f"Path: `{session.path}`",
+        f"CLI: **{cli_type}**",
         f"Mode: **{mode_str}**",
         f"Tool Display: **{getattr(session, 'tool_display', 'timer')}**",
         f"Status: **{session.status}**",

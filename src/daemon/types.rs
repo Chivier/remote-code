@@ -69,8 +69,8 @@ pub enum PermissionMode {
 }
 
 impl PermissionMode {
-    /// Convert permission mode to Claude CLI flags
-    pub fn to_cli_flags(self) -> Vec<&'static str> {
+    /// Convert permission mode to Claude CLI flags (used by ClaudeAdapter)
+    pub fn to_claude_flags(self) -> Vec<&'static str> {
         match self {
             PermissionMode::Auto => vec!["--dangerously-skip-permissions"],
             PermissionMode::Code => vec![],
@@ -162,6 +162,7 @@ pub struct SessionInfo {
     pub path: String,
     pub status: SessionStatus,
     pub mode: PermissionMode,
+    pub cli_type: String,
     pub sdk_session_id: Option<String>,
     pub model: Option<String>,
     pub created_at: String,
@@ -176,151 +177,5 @@ pub struct QueueStats {
     pub client_connected: bool,
 }
 
-// ─── Claude CLI stdout JSON types ───
-// These are raw JSON from `claude --output-format stream-json`
-
-/// Convert raw Claude CLI stdout JSON into our StreamEvent(s).
-///
-/// Returns a Vec because an `assistant` message may contain multiple tool_use
-/// blocks that each need their own event, plus a text block.
-pub fn convert_claude_message(msg: &Value) -> Vec<StreamEvent> {
-    let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-    match msg_type {
-        "system" => vec![StreamEvent::System {
-            subtype: msg
-                .get("subtype")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            session_id: msg
-                .get("session_id")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            model: msg.get("model").and_then(|v| v.as_str()).map(String::from),
-            raw: Some(msg.clone()),
-        }],
-
-        "assistant" => {
-            let mut events = Vec::new();
-
-            if let Some(content) = msg
-                .get("message")
-                .and_then(|m| m.get("content"))
-                .and_then(|c| c.as_array())
-            {
-                // Emit ALL tool_use blocks (not just the first)
-                for block in content.iter() {
-                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                        events.push(StreamEvent::ToolUse {
-                            tool: block.get("name").and_then(|v| v.as_str()).map(String::from),
-                            input: block.get("input").cloned(),
-                            message: None,
-                            raw: None,
-                        });
-                    }
-                }
-
-                // Then emit text blocks
-                let text_blocks: Vec<&Value> = content
-                    .iter()
-                    .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
-                    .collect();
-
-                if !text_blocks.is_empty() {
-                    let text: String = text_blocks
-                        .iter()
-                        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                        .collect::<Vec<_>>()
-                        .join("");
-                    events.push(StreamEvent::Text {
-                        content: Some(text),
-                        raw: None,
-                    });
-                }
-            }
-
-            if events.is_empty() {
-                // Fallback: empty text event
-                events.push(StreamEvent::Text {
-                    content: Some(String::new()),
-                    raw: None,
-                });
-            }
-
-            events
-        }
-
-        "stream_event" => {
-            if let Some(event) = msg.get("event") {
-                let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-                match event_type {
-                    "content_block_delta" => {
-                        if let Some(delta) = event.get("delta") {
-                            // Text streaming deltas → forward as Partial
-                            if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
-                                return vec![StreamEvent::Partial {
-                                    content: Some(text.to_string()),
-                                    raw: None,
-                                }];
-                            }
-                            // partial_json (tool input streaming) → drop, it's noise
-                            if delta.get("partial_json").is_some() {
-                                return vec![];
-                            }
-                        }
-                        vec![]
-                    }
-
-                    "content_block_start" => {
-                        if let Some(cb) = event.get("content_block") {
-                            if cb.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
-                                return vec![StreamEvent::ToolUse {
-                                    tool: cb.get("name").and_then(|v| v.as_str()).map(String::from),
-                                    input: None,
-                                    message: None,
-                                    raw: None,
-                                }];
-                            }
-                        }
-                        // content_block_start for text → ignore (text comes via deltas)
-                        vec![]
-                    }
-
-                    // Internal lifecycle events → drop
-                    "content_block_stop" | "message_start" | "message_stop" | "message_delta" => {
-                        vec![]
-                    }
-
-                    _ => vec![], // Unknown stream_event subtypes → drop
-                }
-            } else {
-                vec![]
-            }
-        }
-
-        // Tool results from user messages are internal — don't forward
-        "user" => vec![],
-
-        "tool_progress" => vec![StreamEvent::ToolUse {
-            tool: msg
-                .get("tool_name")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            input: None,
-            message: msg.get("status").and_then(|v| v.as_str()).map(String::from),
-            raw: Some(msg.clone()),
-        }],
-
-        "result" => vec![StreamEvent::Result {
-            session_id: msg
-                .get("session_id")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            raw: Some(msg.clone()),
-        }],
-
-        // Unknown types → drop (was previously System which triggered flushes)
-        _ => vec![],
-    }
-}
+// Note: convert_claude_message() has been moved to cli_adapter::claude module.
+// Each CLI adapter now implements its own parse_output_line() method.

@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod auth;
+mod cli_adapter;
 mod config;
 mod message_queue;
 mod server;

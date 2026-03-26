@@ -1,6 +1,6 @@
 [package]
 name = "codecast-daemon"
-version = "0.2.20"
+version = "0.3.0-alpha.1"
 edition = "2021"
 description = "Codecast daemon - manages Claude CLI sessions via JSON-RPC over HTTP"
 

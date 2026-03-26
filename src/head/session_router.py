@@ -32,6 +32,7 @@ class Session:
     updated_at: str
     name: Optional[str] = None  # human-friendly name like "bright-falcon"
     tool_display: str = "timer"  # timer | append | batch
+    cli_type: str = "claude"  # claude | codex | gemini | opencode
 
 
 class SessionRouter:
@@ -84,6 +85,8 @@ class SessionRouter:
             self._migrate_add_name_column(conn)
             # Migrate: add 'tool_display' column if missing
             self._migrate_add_tool_display_column(conn)
+            # Migrate: add 'cli_type' column if missing
+            self._migrate_add_cli_type_column(conn)
         finally:
             conn.close()
 
@@ -103,6 +106,15 @@ class SessionRouter:
             conn.execute("ALTER TABLE sessions ADD COLUMN tool_display TEXT NOT NULL DEFAULT 'timer'")
             logger.info("Migrated sessions: added 'tool_display' column")
             conn.commit()
+
+    def _migrate_add_cli_type_column(self, conn: sqlite3.Connection) -> None:
+        """Add 'cli_type' column to sessions and session_log tables if not present."""
+        for table in ("sessions", "session_log"):
+            columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+            if "cli_type" not in columns:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN cli_type TEXT DEFAULT 'claude'")
+                logger.info(f"Migrated {table}: added 'cli_type' column")
+        conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
         """Create a database connection."""
@@ -124,6 +136,7 @@ class SessionRouter:
             updated_at=row["updated_at"],
             name=row["name"] if "name" in row.keys() else None,
             tool_display=row["tool_display"] if "tool_display" in row.keys() else "append",
+            cli_type=row["cli_type"] if "cli_type" in row.keys() else "claude",
         )
 
     def resolve(self, channel_id: str) -> Optional[Session]:
@@ -148,6 +161,7 @@ class SessionRouter:
         path: str,
         daemon_session_id: str,
         mode: str = "auto",
+        cli_type: str = "claude",
     ) -> str:
         """Register a new active session for a channel.
 
@@ -172,12 +186,14 @@ class SessionRouter:
 
             conn.execute(
                 """INSERT OR REPLACE INTO sessions
-                   (channel_id, machine_id, path, daemon_session_id, sdk_session_id, status, mode, created_at, updated_at, name)
-                   VALUES (?, ?, ?, ?, NULL, 'active', ?, ?, ?, ?)""",
-                (channel_id, machine_id, path, daemon_session_id, mode, now, now, name),
+                   (channel_id, machine_id, path, daemon_session_id, sdk_session_id, status, mode, created_at, updated_at, name, cli_type)
+                   VALUES (?, ?, ?, ?, NULL, 'active', ?, ?, ?, ?, ?)""",
+                (channel_id, machine_id, path, daemon_session_id, mode, now, now, name, cli_type),
             )
             conn.commit()
-            logger.info(f"Registered session: {channel_id} -> {machine_id}:{path} ({daemon_session_id}) name={name}")
+            logger.info(
+                f"Registered session: {channel_id} -> {machine_id}:{path} ({daemon_session_id}) name={name} cli={cli_type}"
+            )
             return name
         finally:
             conn.close()
@@ -259,8 +275,8 @@ class SessionRouter:
         # Move to session log
         conn.execute(
             """INSERT INTO session_log
-               (channel_id, machine_id, path, daemon_session_id, sdk_session_id, mode, created_at, detached_at, name)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (channel_id, machine_id, path, daemon_session_id, sdk_session_id, mode, created_at, detached_at, name, cli_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 session.channel_id,
                 session.machine_id,
@@ -271,6 +287,7 @@ class SessionRouter:
                 session.created_at,
                 now,
                 session.name,
+                session.cli_type,
             ),
         )
 
@@ -363,6 +380,7 @@ class SessionRouter:
                     created_at=log_row["created_at"],
                     updated_at=log_row["detached_at"] or log_row["created_at"],
                     name=log_row["name"] if "name" in log_row.keys() else None,
+                    cli_type=log_row["cli_type"] if "cli_type" in log_row.keys() else "claude",
                 )
             return None
         finally:
@@ -445,6 +463,7 @@ class SessionRouter:
                     created_at=log_row["created_at"],
                     updated_at=log_row["detached_at"] or log_row["created_at"],
                     name=log_row["name"] if "name" in log_row.keys() else None,
+                    cli_type=log_row["cli_type"] if "cli_type" in log_row.keys() else "claude",
                 )
             return None
         finally:

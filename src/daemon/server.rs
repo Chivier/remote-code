@@ -104,18 +104,24 @@ async fn handle_create_session(state: &AppState, req: &RpcRequest) -> Result<Rpc
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    let cli_type: Option<String> = params
+        .get("cli_type")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
     // Expand ~ to home directory
     let project_path = expand_tilde(path);
 
-    // Sync skills before creating session
+    // Sync skills before creating session (using adapter's instructions file)
+    let resolved_cli = cli_type.as_deref().unwrap_or("claude");
     let skill_result = state
         .skill_manager
-        .sync_to_project(std::path::Path::new(&project_path));
+        .sync_to_project(std::path::Path::new(&project_path), resolved_cli);
     info!("[RPC] Skills synced: {} files", skill_result.synced.len());
 
     let session_id = state
         .session_pool
-        .create(&project_path, mode, model)
+        .create(&project_path, mode, model, cli_type)
         .await
         .map_err(|e| e.to_string())?;
 

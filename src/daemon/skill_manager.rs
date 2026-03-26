@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::info;
 
+use crate::cli_adapter::create_adapter;
+
 /// SkillManager handles syncing CLAUDE.md and .claude/skills/ to project directories.
 ///
 /// Skills are managed via a "skillshare" model:
@@ -30,8 +32,9 @@ impl SkillManager {
         &self.skills_source_dir
     }
 
-    /// Sync skills from the shared source to a project directory
-    pub fn sync_to_project(&self, project_path: &Path) -> SyncResult {
+    /// Sync skills from the shared source to a project directory.
+    /// Uses the CLI adapter to determine which instructions file and skills dir to sync.
+    pub fn sync_to_project(&self, project_path: &Path, cli_type: &str) -> SyncResult {
         let mut synced = Vec::new();
         let mut skipped = Vec::new();
 
@@ -43,45 +46,51 @@ impl SkillManager {
             return SyncResult { synced, skipped };
         }
 
-        // Sync CLAUDE.md
-        let source_claude_md = self.skills_source_dir.join("CLAUDE.md");
-        let target_claude_md = project_path.join("CLAUDE.md");
+        let adapter = create_adapter(cli_type);
+        let instructions_file = adapter.instructions_file();
 
-        if source_claude_md.exists() {
-            if !target_claude_md.exists() {
-                if let Err(e) = fs::copy(&source_claude_md, &target_claude_md) {
-                    info!("Failed to copy CLAUDE.md: {}", e);
+        // Sync instructions file (CLAUDE.md, GEMINI.md, or AGENTS.md)
+        let source_instructions = self.skills_source_dir.join(instructions_file);
+        let target_instructions = project_path.join(instructions_file);
+
+        if source_instructions.exists() {
+            if !target_instructions.exists() {
+                if let Err(e) = fs::copy(&source_instructions, &target_instructions) {
+                    info!("Failed to copy {}: {}", instructions_file, e);
                 } else {
-                    synced.push("CLAUDE.md".to_string());
+                    synced.push(instructions_file.to_string());
                 }
             } else {
-                skipped.push("CLAUDE.md (already exists)".to_string());
+                skipped.push(format!("{} (already exists)", instructions_file));
             }
         }
 
-        // Sync .claude/skills/ directory
-        let source_skills_dir = self.skills_source_dir.join(".claude").join("skills");
-        let target_skills_dir = project_path.join(".claude").join("skills");
+        // Sync skills directory if the adapter has one (currently only Claude)
+        if let Some(skills_dir) = adapter.skills_dir() {
+            let source_skills_dir = self.skills_source_dir.join(skills_dir);
+            let target_skills_dir = project_path.join(skills_dir);
 
-        if source_skills_dir.exists() {
-            // Ensure target directory exists
-            if let Err(e) = fs::create_dir_all(&target_skills_dir) {
-                info!("Failed to create skills dir: {}", e);
-                return SyncResult { synced, skipped };
+            if source_skills_dir.exists() {
+                // Ensure target directory exists
+                if let Err(e) = fs::create_dir_all(&target_skills_dir) {
+                    info!("Failed to create skills dir: {}", e);
+                    return SyncResult { synced, skipped };
+                }
+
+                // Copy each skill file, skip if already exists
+                self.copy_dir_recursive(
+                    &source_skills_dir,
+                    &target_skills_dir,
+                    &mut synced,
+                    &mut skipped,
+                );
             }
-
-            // Copy each skill file, skip if already exists
-            self.copy_dir_recursive(
-                &source_skills_dir,
-                &target_skills_dir,
-                &mut synced,
-                &mut skipped,
-            );
         }
 
         info!(
-            "Synced to {}: {} files synced, {} skipped",
+            "Synced to {} (cli={}): {} files synced, {} skipped",
             project_path.display(),
+            cli_type,
             synced.len(),
             skipped.len()
         );

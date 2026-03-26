@@ -289,11 +289,40 @@ class BotEngine:
     # ─── Commands ───
 
     async def cmd_start(self, channel_id: str, args: list[str], silent_init: bool = False) -> None:
-        """/start <machine> <remote_path> - Create a new session."""
+        """/start <machine> <remote_path> [--cli <type>] - Create a new session."""
         if len(args) < 2:
             await self.send_message(
                 channel_id,
-                "Usage: `/start <peer> <remote_path>`\nExample: `/start gpu-1 ~/project` or `/start gpu-1 myproject`",
+                "Usage: `/start <peer> <remote_path> [--cli <type>]`\n"
+                "Example: `/start gpu-1 ~/project` or `/start gpu-1 myproject --cli codex`\n"
+                "Shortcuts: `--codex`, `--gemini`, `--opencode`",
+            )
+            return
+
+        # Parse --cli <type> or shorthand flags (--codex, --gemini, --opencode)
+        cli_type = "claude"
+        args = list(args)  # copy to avoid mutating caller's list
+        for shorthand in ("--codex", "--gemini", "--opencode"):
+            if shorthand in args:
+                args.remove(shorthand)
+                cli_type = shorthand.lstrip("-")
+                break
+        if "--cli" in args:
+            idx = args.index("--cli")
+            if idx + 1 < len(args):
+                cli_type = args[idx + 1]
+                del args[idx : idx + 2]
+            else:
+                await self.send_message(
+                    channel_id, "Missing value for `--cli`. Usage: `--cli <claude|codex|gemini|opencode>`"
+                )
+                return
+
+        valid_cli_types = ("claude", "codex", "gemini", "opencode")
+        if cli_type not in valid_cli_types:
+            await self.send_message(
+                channel_id,
+                f"Unknown CLI type: **{cli_type}**. Valid types: {', '.join(valid_cli_types)}",
             )
             return
 
@@ -338,7 +367,9 @@ class BotEngine:
 
         # Create session on daemon (retry once if daemon is unreachable)
         try:
-            daemon_session_id = await self.daemon.create_session(local_port, path, self.config.default_mode)
+            daemon_session_id = await self.daemon.create_session(
+                local_port, path, self.config.default_mode, cli_type=cli_type
+            )
         except (DaemonConnectionError, Exception) as e:
             if "Server disconnected" in str(e) or "connect" in str(e).lower():
                 logger.info(f"Daemon unreachable on {machine_id}, reconnecting...")
@@ -347,7 +378,9 @@ class BotEngine:
                     await self.ssh.tunnels[machine_id].close()
                     del self.ssh.tunnels[machine_id]
                 local_port = await self.ssh.ensure_tunnel(machine_id)
-                daemon_session_id = await self.daemon.create_session(local_port, path, self.config.default_mode)
+                daemon_session_id = await self.daemon.create_session(
+                    local_port, path, self.config.default_mode, cli_type=cli_type
+                )
             else:
                 raise
 
@@ -358,13 +391,15 @@ class BotEngine:
             path,
             daemon_session_id,
             self.config.default_mode,
+            cli_type=cli_type,
         )
 
         model_str = getattr(self.config, "default_model", None) or "default"
+        cli_display = f" ({cli_type})" if cli_type != "claude" else ""
 
         await self.send_message(
             channel_id,
-            f"\u2705 **Session ready**\n"
+            f"\u2705 **Session ready**{cli_display}\n"
             f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
             f"💻 **Peer:** {machine_id}\n"
             f"📂 **Path:** `{path}`\n"
@@ -373,7 +408,7 @@ class BotEngine:
             f"\U0001f9e0 **Model:** {model_str}\n"
             f"🆔 `{daemon_session_id}`\n"
             f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-            f"\u2328\ufe0f Send a message to start chatting with Claude.",
+            f"\u2328\ufe0f Send a message to start chatting.",
         )
 
     async def cmd_resume(self, channel_id: str, args: list[str]) -> None:

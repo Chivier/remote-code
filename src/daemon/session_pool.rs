@@ -5,32 +5,32 @@ use std::sync::Arc;
 use chrono::Utc;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{error, info};
 use uuid::Uuid;
 
+use crate::cli_adapter::create_adapter;
 use crate::message_queue::MessageQueue;
 use crate::server::expand_tilde;
-use crate::types::{
-    convert_claude_message, PermissionMode, QueueStats, SessionInfo, SessionStatus, StreamEvent,
-};
+use crate::types::{PermissionMode, QueueStats, SessionInfo, SessionStatus, StreamEvent};
 
 /// Internal session state
 struct InternalSession {
     session_id: String,
     path: String,
     mode: PermissionMode,
+    cli_type: String,
     status: SessionStatus,
     sdk_session_id: Option<String>,
     created_at: chrono::DateTime<Utc>,
     last_activity_at: chrono::DateTime<Utc>,
-    /// Currently running Claude process (only during message processing)
+    /// Currently running CLI process (only during message processing)
     process: Option<Child>,
     queue: MessageQueue,
     /// Whether we're currently processing a message
     processing: bool,
-    /// Model name reported by Claude CLI
+    /// Model name reported by CLI
     model: Option<String>,
 }
 
@@ -50,12 +50,13 @@ impl SessionPool {
     }
 
     /// Create a new session (lightweight — just registers session state).
-    /// No Claude CLI process is spawned until a message is sent.
+    /// No CLI process is spawned until a message is sent.
     pub async fn create(
         &self,
         path: &str,
         mode: PermissionMode,
         model: Option<String>,
+        cli_type: Option<String>,
     ) -> Result<String, String> {
         // Resolve path: expand ~ and handle bare project names
         let resolved = if path.starts_with('/') || path.starts_with('~') {
@@ -77,15 +78,18 @@ impl SessionPool {
         let session_id = Uuid::new_v4().to_string();
         let now = Utc::now();
 
+        let resolved_cli_type = cli_type.unwrap_or_else(|| "claude".to_string());
+
         info!(
-            "[SessionPool] Creating session {} at {} (mode={:?})",
-            session_id, expanded_path, mode
+            "[SessionPool] Creating session {} at {} (mode={:?}, cli={})",
+            session_id, expanded_path, mode, resolved_cli_type
         );
 
         let session = InternalSession {
             session_id: session_id.clone(),
             path: expanded_path,
             mode,
+            cli_type: resolved_cli_type,
             status: SessionStatus::Idle,
             sdk_session_id: None,
             created_at: now,
@@ -127,6 +131,7 @@ impl SessionPool {
         let (tx, rx) = mpsc::channel(256);
         let path = session.path.clone();
         let mode = session.mode;
+        let cli_type = session.cli_type.clone();
         let sdk_session_id = session.sdk_session_id.clone();
         let model = session.model.clone();
 
@@ -148,6 +153,7 @@ impl SessionPool {
             message_owned,
             path,
             mode,
+            cli_type,
             sdk_session_id,
             model,
             tx,
@@ -255,6 +261,7 @@ impl SessionPool {
                 path: s.path.clone(),
                 status: s.status,
                 mode: s.mode,
+                cli_type: s.cli_type.clone(),
                 sdk_session_id: s.sdk_session_id.clone(),
                 model: s.model.clone(),
                 created_at: s.created_at.to_rfc3339(),
@@ -353,74 +360,54 @@ async fn send_sigterm_then_sigkill(child: &mut Child, timeout_ms: u64) {
     }
 }
 
-/// Run a single Claude CLI invocation and stream events to `tx`.
+/// Run a single CLI invocation and stream events to `tx`.
+/// Uses the CliAdapter to build the command and parse output.
 /// Returns `true` if the process completed successfully.
 #[allow(clippy::too_many_arguments)]
-async fn run_claude_process(
+async fn run_cli_process(
     sessions: &Arc<Mutex<HashMap<String, InternalSession>>>,
     session_id: &str,
     message: &str,
     path: &str,
     mode: PermissionMode,
+    cli_type: &str,
     sdk_session_id: Option<&str>,
     model: Option<&str>,
     tx: &mpsc::Sender<StreamEvent>,
 ) -> bool {
-    // Build CLI arguments
-    let mut args: Vec<String> = vec![
-        "--print".to_string(),
-        message.to_string(),
-        "--output-format".to_string(),
-        "stream-json".to_string(),
-        "--include-partial-messages".to_string(),
-        "--verbose".to_string(),
-    ];
+    // Create a fresh adapter for this invocation
+    let adapter = create_adapter(cli_type);
+    let cwd = std::path::Path::new(path);
 
-    for flag in mode.to_cli_flags() {
-        args.push(flag.to_string());
-    }
+    // Build the command using the adapter
+    let mut cmd = if let Some(sid) = sdk_session_id {
+        adapter.build_resume_command(message, mode, cwd, sid, model)
+    } else {
+        adapter.build_command(message, mode, cwd, model)
+    };
 
-    if let Some(m) = model {
-        args.push("--model".to_string());
-        args.push(m.to_string());
-    }
+    let cli_name = adapter.name();
+    let stderr_level = adapter.stderr_log_level();
 
-    if let Some(sid) = sdk_session_id {
-        args.push("--resume".to_string());
-        args.push(sid.to_string());
-    }
-
-    info!("[SessionPool] Spawning claude for session {}", session_id);
     info!(
-        "[SessionPool] Command: claude {}",
-        args.iter()
-            .map(|a| if a.contains(' ') {
-                format!("\"{}\"", a)
-            } else {
-                a.clone()
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
+        "[SessionPool] Spawning {} for session {}",
+        cli_name, session_id
     );
     info!("[SessionPool] CWD: {}", path);
 
-    // Spawn Claude CLI process
-    let child_result = Command::new("claude")
-        .args(&args)
-        .current_dir(path)
-        .env("TERM", "dumb")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
+    // Spawn CLI process
+    let child_result = cmd.spawn();
 
     let mut child = match child_result {
         Ok(child) => child,
         Err(e) => {
-            error!("[Session {}] Failed to spawn claude: {}", session_id, e);
+            error!(
+                "[Session {}] Failed to spawn {}: {}",
+                session_id, cli_name, e
+            );
             let _ = tx
                 .send(StreamEvent::Error {
-                    message: format!("Failed to spawn claude: {}", e),
+                    message: format!("Failed to spawn {}: {}", cli_name, e),
                 })
                 .await;
             return false;
@@ -439,54 +426,69 @@ async fn run_claude_process(
         }
     }
 
-    // Read stderr in a separate task (just logging)
+    // Read stderr in a separate task (log at adapter-specified level)
     if let Some(stderr) = stderr {
         let sid = session_id.to_string();
+        let cli = cli_name.to_string();
         tokio::spawn(async move {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                error!("[Session {}] stderr: {}", sid, line);
+                if stderr_level == tracing::Level::ERROR {
+                    error!("[Session {} ({})] stderr: {}", sid, cli, line);
+                } else {
+                    info!("[Session {} ({})] stderr: {}", sid, cli, line);
+                }
             }
         });
     }
 
-    // Read stdout line-by-line (JSON-lines from Claude CLI)
+    // Read stdout line-by-line (JSON-lines from CLI)
     if let Some(stdout) = stdout {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
 
         while let Ok(Some(line)) = lines.next_line().await {
-            let parsed: Value = match serde_json::from_str(&line) {
-                Ok(v) => v,
-                Err(_) => {
-                    info!("[Session {}] non-JSON stdout: {}", session_id, line);
-                    continue;
+            // Try to extract session ID from each line
+            if let Some(extracted_sid) = adapter.extract_session_id(&line) {
+                let mut sessions_guard = sessions.lock().await;
+                if let Some(session) = sessions_guard.get_mut(session_id) {
+                    session.sdk_session_id = Some(extracted_sid.clone());
                 }
-            };
-
-            // Extract model name from system init message
-            if parsed.get("type").and_then(|v| v.as_str()) == Some("system")
-                && parsed.get("subtype").and_then(|v| v.as_str()) == Some("init")
-            {
-                if let Some(model) = parsed.get("model").and_then(|v| v.as_str()) {
-                    let mut sessions_guard = sessions.lock().await;
-                    if let Some(session) = sessions_guard.get_mut(session_id) {
-                        session.model = Some(model.to_string());
-                    }
-                    info!("[Session {}] Model: {}", session_id, model);
-                }
+                info!("[Session {}] SDK session ID: {}", session_id, extracted_sid);
             }
 
-            // Convert to StreamEvent(s)
-            let events = convert_claude_message(&parsed);
+            // Parse the line using the adapter
+            let events = adapter.parse_output_line(&line);
+
+            if events.is_empty() {
+                // Check if it was non-JSON
+                if serde_json::from_str::<Value>(&line).is_err() {
+                    info!("[Session {}] non-JSON stdout: {}", session_id, line);
+                }
+                continue;
+            }
 
             for event in events {
-                // Capture SDK session ID
+                // Extract model from System init events
+                if let StreamEvent::System {
+                    model: Some(ref m), ..
+                } = event
+                {
+                    let mut sessions_guard = sessions.lock().await;
+                    if let Some(session) = sessions_guard.get_mut(session_id) {
+                        session.model = Some(m.clone());
+                    }
+                    info!("[Session {}] Model: {}", session_id, m);
+                }
+
+                // Capture SDK session ID from events that carry one
                 if let Some(sid) = event.session_id() {
                     let mut sessions_guard = sessions.lock().await;
                     if let Some(session) = sessions_guard.get_mut(session_id) {
-                        session.sdk_session_id = Some(sid.to_string());
+                        if session.sdk_session_id.is_none() {
+                            session.sdk_session_id = Some(sid.to_string());
+                        }
                     }
                 }
 
@@ -570,17 +572,19 @@ async fn process_message_loop(
     initial_message: String,
     initial_path: String,
     initial_mode: PermissionMode,
+    initial_cli_type: String,
     initial_sdk_session_id: Option<String>,
     initial_model: Option<String>,
     tx: mpsc::Sender<StreamEvent>,
 ) {
     // Process the initial message
-    let success = run_claude_process(
+    let success = run_cli_process(
         &sessions,
         &session_id,
         &initial_message,
         &initial_path,
         initial_mode,
+        &initial_cli_type,
         initial_sdk_session_id.as_deref(),
         initial_model.as_deref(),
         &tx,
@@ -625,12 +629,13 @@ async fn process_message_loop(
         };
 
         // Get current session state for the next message
-        let (path, mode, sdk_sid, model) = {
+        let (path, mode, cli_type, sdk_sid, model) = {
             let sessions_guard = sessions.lock().await;
             if let Some(session) = sessions_guard.get(&session_id) {
                 (
                     session.path.clone(),
                     session.mode,
+                    session.cli_type.clone(),
                     session.sdk_session_id.clone(),
                     session.model.clone(),
                 )
@@ -655,12 +660,13 @@ async fn process_message_loop(
             }
         });
 
-        run_claude_process(
+        run_cli_process(
             &sessions,
             &session_id,
             &queued.message,
             &path,
             mode,
+            &cli_type,
             sdk_sid.as_deref(),
             model.as_deref(),
             &buf_tx,

@@ -83,23 +83,39 @@ class DaemonClient:
 
     # ─── Session Management ───
 
-    async def create_session(self, local_port: int, path: str, mode: str = "auto", model: str | None = None) -> str:
+    async def create_session(
+        self,
+        local_port: int,
+        path: str,
+        mode: str = "auto",
+        model: str | None = None,
+        cli_type: str = "claude",
+    ) -> str:
         """
-        Create a new Claude session on the remote machine.
+        Create a new CLI session on the remote machine.
+
+        Args:
+            local_port: SSH tunnel local port (or direct port for localhost).
+            path: Project path on the remote machine.
+            mode: Permission mode (auto/code/plan/ask).
+            model: Optional model override.
+            cli_type: CLI backend to use (claude/codex/gemini/opencode).
 
         Returns:
             sessionId: The daemon's session ID.
         """
-        params = {"path": path, "mode": mode}
+        params: dict[str, str] = {"path": path, "mode": mode}
         if model:
             params["model"] = model
+        if cli_type != "claude":
+            params["cli_type"] = cli_type
         result = await self._rpc_call(
             local_port,
             "session.create",
             params,
         )
         session_id: str = result["sessionId"]
-        logger.info(f"Created session {session_id} at {path}")
+        logger.info(f"Created session {session_id} at {path} (cli={cli_type})")
         return session_id
 
     async def send_message(
