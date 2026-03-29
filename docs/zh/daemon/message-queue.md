@@ -1,170 +1,120 @@
-# 消息队列 (message-queue.ts)
+# 消息队列（message-queue.ts）
 
-`message-queue.ts` 实现了每个会话独立的消息队列，负责用户消息缓冲、响应事件缓冲和客户端连接状态跟踪。
+**文件：** `daemon/src/message-queue.ts`
 
-**源文件**：`daemon/src/message-queue.ts`
+每会话消息队列，承担三项职责：在 Claude 繁忙时缓冲用户消息、在 SSH 连接断开时缓冲响应，以及追踪客户端连接状态。
 
-## 职责
+## 用途
 
-1. **用户消息缓冲** — 当 Claude 正在处理一条消息时，后续消息自动排队等待
-2. **响应缓冲** — 当 SSH 连接断开时，缓存 Claude 产生的响应事件，重连后回放
-3. **连接状态跟踪** — 追踪 Head Node 客户端的连接状态
+- **用户消息缓冲**：当 Claude 正在处理消息时，额外的用户消息会被排队，并在当前消息完成后按顺序处理。
+- **响应缓冲**：当 SSH 连接（以及 SSE 流）在响应过程中断开时，事件会被缓冲，客户端重连时可以重放。
+- **客户端连接追踪**：追踪 Head Node 客户端当前是否已连接，以便系统决定是否需要缓冲响应。
 
-## 类结构
+## 类：MessageQueue
 
 ```typescript
 class MessageQueue {
-    private userPending: QueuedUserMessage[];    // 待处理的用户消息
-    private responsePending: QueuedResponse[];    // 缓冲的响应事件
-    private _clientConnected: boolean;            // 客户端连接状态
+    private userPending: QueuedUserMessage[];   // 排队的用户消息
+    private responsePending: QueuedResponse[];  // 缓冲的响应事件
+    private _clientConnected: boolean;          // 客户端连接状态
 }
 ```
+
+每个会话有自己的 MessageQueue 实例，在会话创建时建立。
 
 ## 用户消息缓冲
 
-当 Claude 正在处理某条消息（`session.processing = true`）时，`SessionPool.send()` 会将新消息放入队列而非立即处理。
+### `enqueueUser(message: string) -> number`
 
-### enqueueUser(message: string) -> number
+将用户消息加入队列。返回队列位置（从 1 开始）。当 Claude 已经在处理消息时，由 `SessionPool.send()` 调用。
 
-将用户消息加入队列。返回当前队列中的消息数量（即新消息的位置）。
+### `dequeueUser() -> QueuedUserMessage | null`
 
-```typescript
-enqueueUser(message: string): number {
-    this.userPending.push({ message, timestamp: Date.now() });
-    return this.userPending.length;  // 位置信息
-}
-```
+从队列中移除并返回下一条用户消息。队列为空时返回 `null`。消息处理完成后，由 `SessionPool.processMessage()` 调用，检查是否有下一条消息需要处理。
 
-这个位置信息会通过 `{ type: "queued", position }` 事件返回给用户，告知消息已排队。
+### `hasUserPending() -> boolean`
 
-### dequeueUser() -> QueuedUserMessage | null
+如果有排队等待处理的用户消息，返回 `true`。
 
-从队列头部取出下一条消息。在当前消息处理完成后，`SessionPool` 会调用此方法自动处理下一条。
+### `userQueueLength`（getter）
 
-### hasUserPending() -> boolean
-
-检查是否有待处理的用户消息。
-
-### userQueueLength (getter)
-
-返回待处理的用户消息数量。
+返回待处理用户消息的数量。
 
 ## 响应缓冲
 
-当 SSH 隧道断开或 Head Node 的 HTTP 客户端断连时，Claude 可能仍在继续处理消息。此时产生的响应事件会被缓冲，等待客户端重连后一次性回放。
+### `bufferResponse(event: StreamEvent, force: boolean = false) -> void`
 
-### bufferResponse(event: StreamEvent, force: boolean = false)
+缓冲响应事件。默认情况下，只有当 `_clientConnected` 为 `false` 时才会缓冲事件。`force` 参数绕过此检查——当 server.ts 检测到 SSE 客户端已断连但 session pool 尚未收到通知时使用。
 
-缓冲一个响应事件。
+### `replayResponses() -> StreamEvent[]`
 
-```typescript
-bufferResponse(event: StreamEvent, force: boolean = false): void {
-    if (force || !this._clientConnected) {
-        this.responsePending.push({ event, timestamp: Date.now() });
-    }
-}
-```
+返回所有缓冲的响应事件并清空缓冲区。在客户端重连时调用，重放在断连期间生成的所有事件。
 
-- 默认只在客户端断连时缓冲
-- `force = true` 时无论连接状态都会缓冲（用于 server.ts 检测到写入失败的情况）
+### `hasResponsesPending() -> boolean`
 
-### replayResponses() -> StreamEvent[]
+如果有缓冲的响应事件，返回 `true`。
 
-回放所有缓冲的响应事件，并清空缓冲区。
+## 客户端连接状态
 
-```typescript
-replayResponses(): StreamEvent[] {
-    const events = this.responsePending.map((r) => r.event);
-    this.responsePending = [];
-    return events;
-}
-```
+### `clientConnected`（getter）
 
-### hasResponsesPending() -> boolean
+返回当前的客户端连接状态。
 
-检查是否有缓冲的响应事件。
+### `onClientDisconnect() -> void`
 
-## 连接状态管理
+将客户端标记为已断连。此调用之后，响应事件将被缓冲而非假定已送达。当 SSE 响应流的 `close` 事件触发时，由服务器调用。
 
-### clientConnected (getter)
+### `onClientReconnect() -> StreamEvent[]`
 
-返回当前客户端的连接状态。
-
-### onClientDisconnect()
-
-标记客户端断连。之后的响应事件会自动被缓冲。
-
-调用时机：
-- `server.ts` 的 SSE 响应检测到客户端断开（`res.on("close")`）
-- `server.ts` 写入 SSE 数据失败
-
-### onClientReconnect() -> StreamEvent[]
-
-标记客户端重连，并返回在断连期间缓冲的所有事件。
-
-```typescript
-onClientReconnect(): StreamEvent[] {
-    this._clientConnected = true;
-    return this.replayResponses();  // 回放并清空
-}
-```
-
-调用时机：
-- `session.reconnect` RPC 方法被调用
-- `session.resume` RPC 方法被调用
+将客户端标记为已重连，并返回所有缓冲的响应事件（将重连通知与响应重放合并）。由 `session.reconnect` RPC 处理器调用。
 
 ## 清理
 
-### clear()
+### `clear() -> void`
 
-清空所有队列（用户消息和响应缓冲）。在会话销毁或中断时调用。
+清空用户消息队列和响应缓冲区。当会话被销毁或中断时调用。
 
-### stats()
+### `stats() -> { userPending, responsePending, clientConnected }`
 
-返回队列统计信息：
+返回队列统计信息，用于调试和监控。供 `/status` 和 `/monitor` 命令使用。
+
+## 数据类型
+
+### QueuedUserMessage
 
 ```typescript
-stats(): {
-    userPending: number;        // 待处理用户消息数
-    responsePending: number;    // 缓冲响应事件数
-    clientConnected: boolean;   // 客户端是否连接
+interface QueuedUserMessage {
+    message: string;    // 用户消息文本
+    timestamp: number;  // 入队时的 Date.now()
 }
 ```
 
-## 数据流示例
+### QueuedResponse
 
-### 正常流程
-
-```
-用户消息 A → SessionPool.send() → processMessage() → 流式响应 → 完成
-用户消息 B → SessionPool.send() → processMessage() → 流式响应 → 完成
-```
-
-### Claude 忙时排队
-
-```
-用户消息 A → SessionPool.send() → processMessage() → 处理中...
-用户消息 B → SessionPool.send() → queue.enqueueUser(B) → yield {type: "queued", position: 1}
-用户消息 C → SessionPool.send() → queue.enqueueUser(C) → yield {type: "queued", position: 2}
-                                                     ...消息 A 处理完成...
-                              → queue.dequeueUser() → processMessage(B) → 处理中...
-                                                     ...消息 B 处理完成...
-                              → queue.dequeueUser() → processMessage(C) → 流式响应 → 完成
+```typescript
+interface QueuedResponse {
+    event: StreamEvent;  // 响应事件
+    timestamp: number;   // 缓冲时的 Date.now()
+}
 ```
 
-### SSH 断连恢复
+## 流程示例
 
 ```
-消息处理中... → 客户端断连 → queue.onClientDisconnect()
-                            → 响应事件被缓冲到 responsePending
-                            ...一段时间后...
-客户端重连 → session.reconnect RPC → queue.onClientReconnect()
-                                   → 返回所有缓冲事件
-                                   → 客户端重新显示这些事件
+用户发送 msg1 -> Claude 开始处理
+用户发送 msg2 -> enqueueUser("msg2")，position=1
+用户发送 msg3 -> enqueueUser("msg3")，position=2
+Claude 完成 msg1 -> dequeueUser() 返回 msg2
+              -> Claude 开始处理 msg2
+SSH 在流式传输中断开 -> onClientDisconnect()
+              -> 后续事件通过 bufferResponse() 缓冲
+Claude 完成 msg2 -> dequeueUser() 返回 msg3
+              -> Claude 开始处理 msg3
+SSH 重连 -> session.reconnect RPC
+              -> onClientReconnect() 返回缓冲的事件
 ```
 
 ## 与其他模块的关系
 
-- **session-pool.ts** — 每个 InternalSession 持有一个 MessageQueue 实例
-- **server.ts** — 通过 SessionPool 间接调用队列方法
-- **types.ts** — 使用 `QueuedUserMessage`、`QueuedResponse`、`StreamEvent` 类型
+- **session-pool.ts** 为每个会话创建一个 MessageQueue，并调用其方法进行消息排队和客户端状态管理
+- 从 **types.ts** 导入 **StreamEvent**、**QueuedUserMessage** 和 **QueuedResponse**

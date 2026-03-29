@@ -1,173 +1,185 @@
-# Session Pool (session-pool.ts)
+# Session Pool (session_pool.rs)
 
-**File:** `daemon/src/session-pool.ts`
+**File:** `src/daemon/session_pool.rs`
 
-Manages Claude CLI sessions using a per-message spawn architecture. Each user message spawns a fresh `claude --print` process, maintaining conversation continuity via `--resume`.
+Manages CLI sessions using a per-message spawn architecture. Each user message spawns a fresh CLI subprocess via the appropriate `CliAdapter`, maintaining conversation continuity via session resume flags (`--resume` for Claude, equivalent for other CLIs).
 
 ## Purpose
 
-- Maintain a registry of session metadata (path, mode, status, SDK session ID)
-- Spawn Claude CLI processes for individual messages
-- Convert Claude CLI stdout JSON lines to StreamEvent objects
-- Handle message queuing when Claude is busy
+- Maintain a registry of session metadata (path, mode, CLI type, status, SDK session ID)
+- Spawn CLI subprocesses for individual messages via the `CliAdapter` trait
+- Convert CLI stdout JSON-lines to `StreamEvent` values
+- Handle message queuing when the CLI is busy
 - Manage process lifecycle (spawn, monitor, interrupt, kill)
 - Track client connection state for response buffering
 
 ## Architecture: Per-Message Spawn
 
-Rather than maintaining long-running Claude CLI processes, the SessionPool spawns a fresh process for each message:
+Rather than keeping a long-running CLI process with stdin open, the SessionPool spawns a fresh process for each message:
 
 ```
-claude --print "user message" \
-       --output-format stream-json \
-       --verbose \
-       [--resume <sdkSessionId>] \
+# First message (no session ID yet):
+claude --print "user message" --output-format stream-json --verbose \
+       [--dangerously-skip-permissions]
+
+# Subsequent messages (using --resume to continue conversation):
+claude --print "user message" --output-format stream-json --verbose \
+       --resume <sdkSessionId> \
        [--dangerously-skip-permissions]
 ```
 
-**Why per-message spawn?**
-- Claude CLI (v2.1.76+) does not support `--input-format stream-json` without `--print`
-- Each process lives only for the duration of one message exchange
-- The `--resume` flag maintains conversation context by referencing the SDK session ID from the previous interaction
+The `CliAdapter` trait abstracts this pattern across all supported CLIs. Each adapter implements `build_command()` for the first message and `build_resume_command()` for subsequent messages.
 
-## Internal Types
+A **fresh adapter instance** is created for each `run_cli_process()` call via `create_adapter()`. This ensures any per-run state (such as cumulative text tracking) is reset cleanly between message turns.
 
-### InternalSession
+## Internal Session State
 
-Extends `ManagedSession` with runtime state:
-
-```typescript
-interface InternalSession extends ManagedSession {
-    process: ChildProcess | null;  // Currently running Claude process
-    queue: MessageQueue;           // Per-session message queue
-    processing: boolean;           // Whether a message is being processed
-    model: string | null;          // Model name from Claude CLI init
+```rust
+struct InternalSession {
+    session_id: String,
+    path: String,
+    mode: PermissionMode,
+    cli_type: String,
+    status: SessionStatus,
+    sdk_session_id: Option<String>,
+    created_at: DateTime<Utc>,
+    last_activity_at: DateTime<Utc>,
+    process: Option<Child>,       // Running CLI process (only during processing)
+    queue: MessageQueue,          // Per-session message + response queue
+    processing: bool,             // Whether a message is currently being processed
+    model: Option<String>,        // Model name reported by CLI init event
 }
 ```
 
+The `sessions` map is wrapped in `Arc<Mutex<HashMap<String, InternalSession>>>` for async-safe access.
+
 ## Key Methods
 
-### `create(path: string, mode: PermissionMode) -> string`
+### `create(path, mode, model, cli_type) -> Result<String, String>`
 
-Creates a new session. This is **lightweight** -- it only registers session metadata:
+Creates a new session entry. **Lightweight — no CLI process is spawned.**
 
-1. Validates that the project path exists on the filesystem
-2. Generates a UUID for the session ID
-3. Creates an `InternalSession` with status `idle`, no process, and a fresh `MessageQueue`
-4. Returns the session ID
+1. Resolves the path: expands `~`, and expands bare project names to `~/Projects/<name>`
+2. Validates that the resolved path exists on the filesystem
+3. Generates a UUID for the session ID
+4. Inserts an `InternalSession` with `status: Idle`, no process, and a fresh `MessageQueue`
+5. Returns the session ID
 
-No Claude CLI process is spawned at this point.
+### `send(session_id, message) -> mpsc::Receiver<StreamEvent>`
 
-### `send(sessionId: string, message: string) -> AsyncGenerator<StreamEvent>`
+Sends a message to a session. Returns a channel receiver that yields stream events.
 
-Sends a message to a session. Returns an async generator that yields stream events.
-
-**If Claude is busy** (another message is being processed):
-- Enqueues the message via `MessageQueue.enqueueUser()`
-- Yields a single `queued` event with the queue position
+**If the session is busy** (another message in flight):
+- Enqueues the message via `queue.enqueue_user()`
+- Sends a single `Queued { position }` event on the receiver
 - Returns immediately
 
-**If Claude is idle:**
-- Delegates to `processMessage()` which spawns a Claude process
+**If the session is idle:**
+- Sets `status: Busy` and `processing: true`
+- Spawns a tokio task that calls `run_cli_process()`
+- The task forwards events onto the mpsc channel
 
-### `processMessage(session, message) -> AsyncGenerator<StreamEvent>`
+### `run_cli_process(session_id, message) -> impl Stream<Item = StreamEvent>`
 
-Internal method that spawns a Claude CLI process and yields events.
+Internal method that spawns the CLI subprocess and yields events.
+
+**Adapter selection and command building:**
+
+```rust
+let adapter = create_adapter(&session.cli_type);
+let command = if let Some(sdk_id) = &session.sdk_session_id {
+    adapter.build_resume_command(message, mode, cwd, sdk_id, model)
+} else {
+    adapter.build_command(message, mode, cwd, model)
+};
+```
 
 **Process spawn:**
 
-```typescript
-const child = spawn("claude", args, {
-    cwd: session.path,
-    stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, TERM: "dumb" },
-});
+```rust
+let mut child = command
+    .current_dir(&session.path)
+    .stdin(Stdio::null())       // --print mode: stdin not needed
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()?;
 ```
 
-The `TERM: "dumb"` environment variable prevents Claude CLI from outputting ANSI escape codes.
+Stdin is set to null because `--print` mode reads the prompt from CLI arguments.
 
-**CLI arguments built from session state:**
-- `--print <message>` -- The user's message
-- `--output-format stream-json` -- JSON-lines output
-- `--verbose` -- Include system messages
-- `--resume <sdkSessionId>` -- Continue previous conversation (if available)
-- `--dangerously-skip-permissions` -- Only in `auto` mode
+**Output processing:**
 
-**Stdin** is closed immediately (`child.stdin.end()`), since `--print` mode reads the prompt from arguments.
+stdout is read line-by-line using `tokio::io::BufReader` and `AsyncBufReadExt::lines()`. Each line is passed to `adapter.parse_output_line()`, which returns zero or more `StreamEvent` values. Events are forwarded onto the mpsc channel.
 
-**Event processing:**
+stderr is logged at the level specified by `adapter.stderr_log_level()` (typically `debug` for Claude, `warn` for others).
 
-stdout is read line-by-line using Node.js `readline.createInterface()`. Each line is parsed as JSON (`ClaudeStdoutMessage`) and converted to a `StreamEvent` via `convertToStreamEvent()`.
+**Session ID extraction:**
 
-Events are pushed to an internal queue. The async generator yields events as they arrive, using a promise-based wait mechanism for backpressure.
+On the first line of output, `adapter.extract_session_id()` is called. If an ID is found, it is stored as `session.sdk_session_id` for future `build_resume_command()` calls.
 
-**Terminal events:** The generator breaks on `result`, `error`, or `interrupted` events.
+**Model name capture:**
 
-**Cleanup:**
-- `session.process` is set to null
-- `session.processing` is set to false
-- `session.status` is set to `idle`
-- If the process is still alive, SIGTERM is sent (with a 3-second SIGKILL fallback)
-- If queued messages exist, the next one is auto-processed via `processQueuedMessage()`
+`System { subtype: Some("init"), model, .. }` events are used to update `session.model`.
 
-### `convertToStreamEvent(msg: ClaudeStdoutMessage) -> StreamEvent`
+**Terminal events:**
 
-Maps Claude CLI stdout JSON messages to the internal StreamEvent format:
+The generator stops forwarding events after receiving a `Result`, `Error`, or `Interrupted` event. The subprocess is awaited and then cleaned up.
 
-| Claude CLI Type | StreamEvent Type | Content |
-|---|---|---|
-| `system` (init) | `system` | Model name, session ID |
-| `assistant` (text blocks) | `text` | Concatenated text content |
-| `assistant` (tool blocks) | `tool_use` | Tool name, input data |
-| `stream_event` (content_block_delta, text) | `partial` | Text delta |
-| `stream_event` (content_block_delta, partial_json) | `partial` | Partial JSON |
-| `stream_event` (content_block_start, tool_use) | `tool_use` | Tool name |
-| `tool_progress` | `tool_use` | Tool name, status message |
-| `result` | `result` | Session ID |
+**Cleanup after process exit:**
 
-The `session_id` field from `result` events is captured and stored as `session.sdkSessionId` for future `--resume` calls.
+1. `session.process` is set to `None`
+2. `session.processing` is set to `false`
+3. `session.status` is set to `Idle`
+4. If the process exited with a non-zero code, an `Error` event is emitted
+5. If there are queued user messages, `process_queued_message()` is called to auto-process the next one
 
-### `resume(sessionId, sdkSessionId?) -> { ok, fallback }`
+### `resume(session_id, sdk_session_id?) -> Result<ResumeResult, String>`
 
-Resumes a session. In per-message spawn mode, this simply updates the `sdkSessionId` so the next `send()` will use `--resume`. Also calls `queue.onClientReconnect()`.
+In per-message spawn mode, this simply updates `sdk_session_id` so the next `send()` uses the resume command. Also calls `queue.on_client_reconnect()` to mark the client as reconnected.
 
-### `destroy(sessionId) -> boolean`
+Returns `{ ok: true, fallback: false }`.
 
-Destroys a session:
-1. Kills any running Claude process (SIGTERM, then SIGKILL after 5 seconds)
-2. Sets status to `destroyed`
-3. Clears the message queue
-4. Removes the session from the pool
+### `destroy(session_id) -> bool`
 
-### `setMode(sessionId, mode) -> boolean`
+1. Sends SIGTERM to any running CLI process
+2. Waits up to 5 seconds for the process to exit; sends SIGKILL if it does not
+3. Sets `status: Destroyed`
+4. Clears the message queue
+5. Removes the session from the pool
 
-Updates the permission mode for a session. Takes effect on the next `send()` (next process spawn).
+### `set_mode(session_id, mode) -> bool`
 
-### `interrupt(sessionId) -> boolean`
+Updates `session.mode`. Takes effect on the next `send()` call since the mode is passed to `adapter.build_command()`.
 
-Interrupts the current Claude operation:
-1. Sends SIGTERM to the running Claude CLI process
-2. Clears the message queue
-3. Returns `true` if there was an active operation to interrupt
+### `set_model(session_id, model) -> bool`
 
-### `listSessions() -> SessionInfo[]`
+Updates `session.model`. Takes effect on the next `send()` call.
 
-Returns info for all sessions: sessionId, path, status, mode, sdkSessionId, model, createdAt, lastActivityAt.
+### `interrupt(session_id) -> Result<bool, String>`
 
-### `clientDisconnect(sessionId)` / `bufferEvent(sessionId, event)` / `clientReconnect(sessionId)`
+1. Sends SIGTERM to the running CLI process
+2. Clears the message queue (cancels any pending messages)
+3. Returns `true` if there was an active process to interrupt, `false` if the session was idle
 
-Proxy methods for MessageQueue's client connection state management. Used by server.ts when the SSE connection drops.
+### `list_sessions() -> Vec<SessionInfo>`
 
-### `getQueueStats(sessionId) -> { userPending, responsePending, clientConnected }`
+Returns `SessionInfo` for all non-destroyed sessions. `SessionInfo` is a serializable snapshot (dates as ISO 8601 strings, no runtime-only fields).
 
-Returns queue statistics for a session.
+### `client_disconnect(session_id)` / `client_reconnect(session_id) -> Vec<StreamEvent>`
 
-### `destroyAll() -> void`
+Proxy methods for `MessageQueue` client state management. Called by `server.rs` when the SSE connection drops or is re-established.
+
+### `get_queue_stats(session_id) -> QueueStats`
+
+Returns `QueueStats { user_pending, response_pending, client_connected }` for a session.
+
+### `destroy_all()`
 
 Destroys all sessions. Called during daemon shutdown.
 
 ## Connection to Other Modules
 
-- **server.ts** creates a single `SessionPool` instance and calls its methods for all session-related RPC handlers
-- Uses **MessageQueue** for per-session message buffering
-- Imports types from **types.ts** (ManagedSession, SessionInfo, StreamEvent, PermissionMode, etc.)
+- **server.rs** creates a single `SessionPool` instance (inside `AppState`) and calls its methods for all session-related RPC handlers
+- Uses **cli_adapter** via `create_adapter()` to build and parse CLI subprocesses
+- Uses **MessageQueue** for per-session message buffering and client state tracking
+- Imports types from **types.rs** (`SessionStatus`, `PermissionMode`, `StreamEvent`, `SessionInfo`, `QueueStats`)

@@ -1,59 +1,89 @@
 # Codecast
 
-Codecast is a distributed system for controlling [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) on remote machines through chat bots (Discord and Telegram). It enables you to interact with Claude on GPU servers, cloud VMs, or any SSH-accessible machine directly from your phone or desktop chat client.
+Codecast is a distributed system for controlling AI CLI tools on remote machines through chat bots. It supports Discord, Telegram, and Lark (Feishu), and works with Claude CLI, Codex (OpenAI), Gemini CLI, and OpenCode.
+
+The system lets you start, manage, and interact with AI sessions on GPU servers, cloud VMs, or any SSH-accessible machine directly from your phone or desktop chat client.
 
 ## Why Codecast?
 
-When working with remote development servers -- GPU nodes behind firewalls, lab machines accessible only via jump hosts, cloud instances without a GUI -- you often need to run Claude CLI in those environments. Codecast bridges the gap by letting you start, manage, and interact with Claude sessions on those machines through familiar chat interfaces.
+When working with remote development servers -- GPU nodes behind firewalls, lab machines accessible only via jump hosts, cloud instances without a GUI -- you often need to run AI CLI tools in those environments. Codecast bridges the gap by letting you manage those sessions through familiar chat interfaces without opening a terminal.
 
 ## Key Features
 
-- **SSH Tunnel Management** -- Automatic SSH connections with ProxyJump support, port forwarding, and connection health monitoring. The daemon only binds to `127.0.0.1`, so all communication is secured through SSH tunnels.
+**SSH Tunnel Management** -- Automatic SSH connections with ProxyJump support, port forwarding, and connection health monitoring. The daemon only binds to `127.0.0.1`, so all communication is secured through SSH tunnels.
 
-- **Auto-Deployment** -- The daemon (TypeScript/Node.js) is automatically built locally, deployed to remote machines via SCP, and started when you first connect. No manual setup needed on the remote side.
+**Auto-Deployment** -- The daemon is a single static Rust binary. It is automatically deployed to remote machines via SCP on first connection. No Node.js, npm, or manual setup is needed on the remote side.
 
-- **Session Routing** -- SQLite-backed session registry that maps chat channels to active Claude sessions across multiple machines. Sessions can be detached, resumed, and destroyed independently.
+**Multi-CLI Support** -- Start sessions using Claude CLI, Codex (OpenAI), Gemini CLI, or OpenCode. Choose the CLI per session with the `--cli` flag on `/start`.
 
-- **Message Queuing** -- When Claude is busy processing a request, additional messages are queued and processed in order. If the SSH connection drops mid-stream, responses are buffered and replayed on reconnect.
+**Session Routing** -- A SQLite-backed session registry maps chat channels to active AI sessions across multiple machines. Sessions can be detached, resumed, and destroyed independently.
 
-- **Skills Sync** -- Share `CLAUDE.md` and `.claude/skills/` files across projects on remote machines. Skills are synced from a local directory to remote project paths on session creation, without overwriting existing project-specific files.
+**Message Queuing** -- When the AI is busy processing a request, additional messages are queued and processed in order. If the SSH connection drops mid-stream, responses are buffered and replayed on reconnect.
 
-- **Multi-Platform Bot Support** -- Both Discord (with slash commands, autocomplete, typing indicators, and heartbeat status) and Telegram (with Markdown formatting and user-based access control) are supported. Run one or both simultaneously.
+**Streaming Responses** -- Responses stream back in real-time via Server-Sent Events (SSE), with partial text updates rendered progressively in chat. Long responses are automatically split to fit platform message limits.
 
-- **Streaming Responses** -- Claude's responses are streamed back in real-time via SSE (Server-Sent Events), with partial text updates rendered progressively in chat. Long responses are automatically split to fit platform message limits.
+**Tool Display Modes** -- Three modes control how tool calls are displayed during a response: `timer` (shows elapsed time, sends all results at the end), `append` (shows each tool call progressively), and `batch` (accumulates tool calls into a summary at the end).
 
-- **Permission Modes** -- Four modes control Claude's autonomy: `auto` (bypass all permissions), `code` (auto-accept edits, confirm bash), `plan` (read-only analysis), and `ask` (confirm everything). Switch modes at any time during a session.
+**Interactive Questions** -- When the AI uses `AskUserQuestion`, each platform presents the question with interactive controls: buttons on Discord, an inline keyboard on Telegram, and interactive cards on Lark.
+
+**File Forwarding** -- When AI responses reference file paths, Codecast can automatically download matching files from the remote machine and send them to your chat.
+
+**Permission Modes** -- Four modes control AI autonomy: `auto` (bypass all permissions), `code` (auto-accept edits, confirm bash), `plan` (read-only analysis), and `ask` (confirm everything). Switch modes at any time during a session.
+
+**Skills Sync** -- Share `CLAUDE.md` and `.claude/skills/` files across projects on remote machines. Skills are synced from a local directory to remote project paths on session creation, without overwriting existing files.
+
+**Web UI and TUI** -- A browser-based Web UI and an interactive terminal UI (TUI) are available in addition to the chat bot interface.
+
+**Model Switching** -- Switch the AI model mid-session with `/model` without restarting the session.
+
+## Supported Platforms
+
+| Platform | Access Control | Interactive Questions | File Sharing |
+|---|---|---|---|
+| Discord | Channel whitelist | Buttons | Attachments |
+| Telegram | User ID whitelist | Inline keyboard | File messages |
+| Lark (Feishu) | Chat ID whitelist | Interactive cards | File messages |
 
 ## Project Structure
 
 ```
 codecast/
-├── head/                    # Head Node (Python) - local orchestrator
-│   ├── main.py              # Entry point
-│   ├── config.py            # Configuration loader
-│   ├── ssh_manager.py       # SSH tunnels & daemon lifecycle
-│   ├── session_router.py    # SQLite session registry
-│   ├── daemon_client.py     # JSON-RPC client
-│   ├── bot_base.py          # Abstract bot base class
-│   ├── bot_discord.py       # Discord bot implementation
-│   ├── bot_telegram.py      # Telegram bot implementation
-│   └── message_formatter.py # Output formatting & message splitting
-├── daemon/                  # Daemon (TypeScript) - runs on remote machines
-│   └── src/
-│       ├── server.ts        # Express JSON-RPC server
-│       ├── session-pool.ts  # Claude CLI process management
-│       ├── message-queue.ts # Message & response buffering
-│       ├── skill-manager.ts # Skills file sync
-│       └── types.ts         # Type definitions & RPC protocol
-├── config.example.yaml      # Example configuration
-├── requirements.txt         # Python dependencies
-└── docs/                    # This documentation
+├── src/
+│   ├── head/                        # Head Node (Python)
+│   │   ├── cli.py                   # CLI entry point
+│   │   ├── main.py                  # Head node entry
+│   │   ├── config.py                # Config loader
+│   │   ├── engine.py                # Core command engine
+│   │   ├── ssh_manager.py           # SSH connections & tunnels
+│   │   ├── session_router.py        # SQLite session registry
+│   │   ├── daemon_client.py         # JSON-RPC + SSE client
+│   │   ├── message_formatter.py     # Message formatting
+│   │   ├── file_forward.py          # File forwarding
+│   │   ├── platform/                # Bot adapters
+│   │   │   ├── protocol.py          # Platform adapter interface
+│   │   │   ├── discord_adapter.py
+│   │   │   ├── telegram_adapter.py
+│   │   │   └── lark_adapter.py
+│   │   ├── tui/                     # Terminal UI (Textual)
+│   │   └── webui/                   # Web UI (aiohttp)
+│   └── daemon/                      # Daemon (Rust)
+│       ├── main.rs                  # Axum HTTP server
+│       ├── server.rs                # JSON-RPC router, SSE streaming
+│       ├── session_pool.rs          # CLI process management
+│       ├── message_queue.rs         # Message buffering
+│       ├── cli_adapter/             # Multi-CLI adapters
+│       │   ├── claude.rs
+│       │   ├── codex.rs
+│       │   ├── gemini.rs
+│       │   └── opencode.rs
+│       └── types.rs                 # Type definitions
+├── docs/                            # This documentation
+└── tests/                           # Python tests (855+ tests)
 ```
 
 ## Quick Links
 
-- [Architecture Overview](./architecture.md) -- Understand the two-tier design
 - [Getting Started](./getting-started.md) -- Install and run Codecast
 - [Configuration Guide](./configuration.md) -- All config.yaml options
 - [Bot Command Reference](./commands.md) -- Every chat command explained
-- [JSON-RPC Protocol](./api/rpc-protocol.md) -- Daemon API reference
+- [Architecture Overview](./architecture.md) -- Understand the two-tier design

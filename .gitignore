@@ -39,6 +39,9 @@ head/bin/codecast-daemon-*
 .superpowers/
 docs/superpowers/
 
+# .claude worktrees (auto-created, not committed)
+.claude/worktrees/
+
 # OS
 .DS_Store
 Thumbs.db

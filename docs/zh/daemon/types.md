@@ -1,8 +1,17 @@
-# 类型定义 (types.ts)
+# 类型定义（types.ts）
 
-`types.ts` 定义了 Daemon 中所有共享的 TypeScript 类型，包括 RPC 协议、会话状态、流事件和 Claude CLI 输出格式。
+**文件：** `daemon/src/types.ts`
 
-**源文件**：`daemon/src/types.ts`
+守护进程 RPC 协议、会话管理、流事件和 Claude CLI JSON 行格式的核心类型定义。
+
+## 用途
+
+- 定义 JSON-RPC 请求/响应的线协议格式
+- 定义会话状态和权限模式枚举
+- 将权限模式映射到 Claude CLI 标志
+- 定义 SSE 通信的流事件类型
+- 定义 Claude CLI stdout 消息格式
+- 为每个 RPC 方法定义有类型的参数和结果接口
 
 ## RPC 协议类型
 
@@ -10,9 +19,9 @@
 
 ```typescript
 interface RpcRequest {
-    method: string;                      // RPC 方法名
-    params?: Record<string, unknown>;    // 方法参数
-    id?: string;                         // 请求 ID（可选）
+    method: string;                    // 如 "session.create"
+    params?: Record<string, unknown>;  // 方法参数
+    id?: string;                       // 可选请求 ID
 }
 ```
 
@@ -20,13 +29,9 @@ interface RpcRequest {
 
 ```typescript
 interface RpcResponse {
-    result?: unknown;                    // 成功时的结果
-    error?: {
-        code: number;                    // 错误码
-        message: string;                 // 错误消息
-        data?: unknown;                  // 附加错误数据
-    };
-    id?: string;                         // 对应请求的 ID
+    result?: unknown;                           // 成功结果
+    error?: { code: number; message: string; data?: unknown };  // 错误
+    id?: string;                                // 回显的请求 ID
 }
 ```
 
@@ -38,12 +43,10 @@ interface RpcResponse {
 type SessionStatus = "idle" | "busy" | "error" | "destroyed";
 ```
 
-| 状态 | 说明 |
-|------|------|
-| `idle` | 空闲，没有 Claude 进程在运行 |
-| `busy` | 正在处理消息，Claude 进程运行中 |
-| `error` | 出错状态 |
-| `destroyed` | 已销毁 |
+- **idle**：无 Claude 进程运行，准备好接收消息
+- **busy**：Claude 进程正在处理消息
+- **error**：会话遇到错误
+- **destroyed**：会话已销毁和清理
 
 ### PermissionMode
 
@@ -51,48 +54,38 @@ type SessionStatus = "idle" | "busy" | "error" | "destroyed";
 type PermissionMode = "auto" | "code" | "plan" | "ask";
 ```
 
-### modeToCliFlag(mode) -> string[]
+### `modeToCliFlag(mode: PermissionMode) -> string[]`
 
-将权限模式转换为 Claude CLI 的命令行标志。
+将内部模式名称映射为 Claude CLI 标志：
 
-```typescript
-function modeToCliFlag(mode: PermissionMode): string[] {
-    switch (mode) {
-        case "auto":
-            return ["--dangerously-skip-permissions"];
-        case "code":
-            return [];  // SDK 级别，CLI 无直接标志
-        case "plan":
-            return [];  // SDK 级别
-        case "ask":
-            return [];  // 默认行为
-        default:
-            return ["--dangerously-skip-permissions"];
-    }
-}
-```
+| 模式 | CLI 标志 | 效果 |
+|---|---|---|
+| `auto` | `["--dangerously-skip-permissions"]` | 完全自动化，无确认提示 |
+| `code` | `[]` | 无特定 CLI 标志（SDK 层面） |
+| `plan` | `[]` | 无特定 CLI 标志（SDK 层面） |
+| `ask` | `[]` | 默认行为（所有工具需要确认） |
 
-> **注意**：只有 `auto` 模式有对应的 CLI 标志。`code`、`plan`、`ask` 是 SDK 级别的概念，在 `--print` 模式下 CLI 不直接支持。默认行为（不带标志）等同于 `ask` 模式。
+目前只有 `auto` 模式有对应的 CLI 标志。`code` 和 `plan` 模式是 SDK 层面的概念，在 Claude CLI 的 `--print` 模式下没有直接对应的标志。
 
 ### ManagedSession
 
-会话的核心数据结构。
+基础会话接口：
 
 ```typescript
 interface ManagedSession {
-    sessionId: string;              // 会话唯一 ID (UUID)
-    path: string;                   // 项目路径
-    mode: PermissionMode;           // 权限模式
-    status: SessionStatus;          // 当前状态
-    sdkSessionId: string | null;    // Claude SDK 会话 ID（用于 --resume）
-    createdAt: Date;                // 创建时间
-    lastActivityAt: Date;           // 最后活动时间
+    sessionId: string;
+    path: string;
+    mode: PermissionMode;
+    status: SessionStatus;
+    sdkSessionId: string | null;
+    createdAt: Date;
+    lastActivityAt: Date;
 }
 ```
 
 ### SessionInfo
 
-用于 API 返回的会话信息（Date 序列化为 ISO 字符串）。
+可序列化的会话信息（日期以 ISO 字符串表示）：
 
 ```typescript
 interface SessionInfo {
@@ -101,9 +94,9 @@ interface SessionInfo {
     status: SessionStatus;
     mode: PermissionMode;
     sdkSessionId: string | null;
-    model: string | null;           // 模型名称（如 claude-sonnet-4-20250514）
-    createdAt: string;              // ISO 时间字符串
-    lastActivityAt: string;
+    model: string | null;
+    createdAt: string;      // ISO 8601
+    lastActivityAt: string;  // ISO 8601
 }
 ```
 
@@ -113,15 +106,15 @@ interface SessionInfo {
 
 ```typescript
 type StreamEventType =
-    | "text"         // 完整文本块
-    | "tool_use"     // 工具调用
-    | "tool_result"  // 工具结果
-    | "result"       // 完成事件
-    | "queued"       // 消息已排队
-    | "error"        // 错误
-    | "system"       // 系统事件
-    | "partial"      // 流式文本增量
-    | "ping"         // 心跳
+    | "text"        // 完整文本块
+    | "tool_use"    // 工具调用
+    | "tool_result" // 工具执行结果
+    | "result"      // 带 session_id 的最终结果
+    | "queued"      // 消息已排队（Claude 繁忙）
+    | "error"       // 错误消息
+    | "system"      // 系统事件（init 等）
+    | "partial"     // 流式文本增量
+    | "ping"        // 保活
     | "interrupted"; // 操作被中断
 ```
 
@@ -130,16 +123,16 @@ type StreamEventType =
 ```typescript
 interface StreamEvent {
     type: StreamEventType;
-    content?: string;          // text/partial 的文本内容
-    tool?: string;             // tool_use 的工具名
-    input?: unknown;           // tool_use 的输入参数
-    output?: unknown;          // tool_result 的输出
-    session_id?: string;       // result 事件的 SDK Session ID
-    position?: number;         // queued 事件的队列位置
-    message?: string;          // error 事件的错误消息 / tool_use 的描述
-    subtype?: string;          // system 事件的子类型
-    model?: string;            // system.init 的模型名称
-    raw?: unknown;             // Claude CLI 原始数据
+    content?: string;       // 文本内容（用于 text/partial）
+    tool?: string;          // 工具名称（用于 tool_use）
+    input?: unknown;        // 工具输入（用于 tool_use）
+    output?: unknown;       // 工具输出（用于 tool_result）
+    session_id?: string;    // SDK 会话 ID（用于 result/system）
+    position?: number;      // 队列位置（用于 queued）
+    message?: string;       // 错误/状态消息
+    subtype?: string;       // 事件子类型（system 的 "init"）
+    model?: string;         // 模型名称（用于 system init）
+    raw?: unknown;          // 原始 Claude CLI 数据（直接传递）
 }
 ```
 
@@ -149,8 +142,8 @@ interface StreamEvent {
 
 ```typescript
 interface QueuedUserMessage {
-    message: string;     // 用户消息内容
-    timestamp: number;   // 入队时间戳
+    message: string;    // 用户消息文本
+    timestamp: number;  // Date.now()
 }
 ```
 
@@ -158,98 +151,72 @@ interface QueuedUserMessage {
 
 ```typescript
 interface QueuedResponse {
-    event: StreamEvent;  // 响应事件
-    timestamp: number;   // 缓冲时间戳
+    event: StreamEvent;  // 缓冲的响应事件
+    timestamp: number;   // Date.now()
 }
 ```
 
-## RPC 方法参数和结果类型
+## RPC 方法参数和结果
 
-### CreateSessionParams / CreateSessionResult
+### 会话方法
 
 ```typescript
 interface CreateSessionParams {
-    path: string;              // 项目路径（必需）
-    mode?: PermissionMode;     // 权限模式（可选，默认 auto）
+    path: string;
+    mode?: PermissionMode;
 }
 
 interface CreateSessionResult {
-    sessionId: string;         // 新创建的会话 ID
+    sessionId: string;
 }
-```
 
-### SendMessageParams
-
-```typescript
 interface SendMessageParams {
-    sessionId: string;         // 会话 ID
-    message: string;           // 用户消息
+    sessionId: string;
+    message: string;
 }
-```
 
-> 注意：`session.send` 没有 Result 类型，因为它返回 SSE 流。
-
-### ResumeSessionParams / ResumeSessionResult
-
-```typescript
 interface ResumeSessionParams {
-    sessionId: string;             // 会话 ID
-    sdkSessionId?: string;         // SDK Session ID（可选）
+    sessionId: string;
+    sdkSessionId?: string;
 }
 
 interface ResumeSessionResult {
     ok: boolean;
-    fallback?: boolean;            // 是否降级为注入历史
-    newSdkSessionId?: string;      // 新的 SDK Session ID
+    fallback?: boolean;
+    newSdkSessionId?: string;
 }
-```
 
-### DestroySessionParams
-
-```typescript
 interface DestroySessionParams {
     sessionId: string;
 }
-```
 
-### SetModeParams
-
-```typescript
 interface SetModeParams {
     sessionId: string;
     mode: PermissionMode;
 }
-```
 
-### InterruptSessionParams
-
-```typescript
 interface InterruptSessionParams {
     sessionId: string;
 }
 ```
 
-### HealthCheckResult
+### 健康检查和监控
 
 ```typescript
 interface HealthCheckResult {
     ok: boolean;
     sessions: number;
     sessionsByStatus: Record<string, number>;
-    uptime: number;                // 秒
+    uptime: number;        // 秒
     memory: {
-        rss: number;               // MB
-        heapUsed: number;          // MB
-        heapTotal: number;         // MB
+        rss: number;       // MB
+        heapUsed: number;  // MB
+        heapTotal: number; // MB
     };
     nodeVersion: string;
     pid: number;
 }
-```
 
-### MonitorSessionDetail / MonitorSessionsResult
-
-```typescript
 interface MonitorSessionDetail {
     sessionId: string;
     path: string;
@@ -269,62 +236,69 @@ interface MonitorSessionDetail {
 interface MonitorSessionsResult {
     sessions: MonitorSessionDetail[];
     totalSessions: number;
-    uptime: number;
+    uptime: number;  // 秒
 }
 ```
 
-## Claude CLI JSON-lines 协议
+## Claude CLI JSON 行协议
 
 ### ClaudeStdoutMessage
 
-Claude CLI 在 `--output-format stream-json` 模式下输出的 JSON 行格式。
+Claude CLI 的 `--output-format stream-json` 输出的原始消息格式：
 
 ```typescript
 interface ClaudeStdoutMessage {
-    type: string;                  // system | assistant | stream_event | tool_progress | result
-    subtype?: string;              // init (for system)
-    session_id?: string;
+    type: string;           // "system", "assistant", "stream_event", "result", "tool_progress"
+    subtype?: string;       // system 消息的 "init"
+    session_id?: string;    // SDK 会话 ID
 
-    // assistant 消息
+    // assistant 消息内容
     message?: {
         role: string;
         content: Array<{
-            type: string;          // text | tool_use
-            text?: string;         // text 类型的内容
-            name?: string;         // tool_use 的工具名
-            input?: unknown;       // tool_use 的输入
-            id?: string;           // tool_use 的 ID
+            type: string;    // "text" 或 "tool_use"
+            text?: string;
+            name?: string;   // 工具名称
+            input?: unknown; // 工具输入
+            id?: string;
         }>;
     };
 
-    // stream_event
+    // 流式事件
     event?: {
-        type: string;              // content_block_delta | content_block_start
+        type: string;        // "content_block_delta", "content_block_start"
         index?: number;
         delta?: {
             type?: string;
-            text?: string;         // 文本增量
-            partial_json?: string; // JSON 增量
+            text?: string;
+            partial_json?: string;
         };
         content_block?: {
-            type: string;          // text | tool_use
+            type: string;    // "text" 或 "tool_use"
             text?: string;
             name?: string;
             id?: string;
         };
     };
 
-    // result
+    // 结果元数据
     duration_ms?: number;
     usage?: {
         input_tokens: number;
         output_tokens: number;
     };
 
-    // tool_progress
+    // 工具进度
     tool_name?: string;
     status?: string;
 }
 ```
 
-> **注意**：系统使用 `--print` 模式（每消息生成进程），因此不存在 stdin 输入类型。消息通过 CLI 参数传递。
+注：`ClaudeStdinMessage` 已从类型定义中移除，因为守护进程使用 `--print` 模式（每消息生成进程）而非 stdin JSON 行。
+
+## 与其他模块的关系
+
+- **所有守护进程模块**都从此文件导入类型
+- **server.ts** 使用 RPC 请求/响应类型和参数接口
+- **session-pool.ts** 使用会话类型、流事件和模式到标志的映射
+- **message-queue.ts** 使用队列类型和 StreamEvent

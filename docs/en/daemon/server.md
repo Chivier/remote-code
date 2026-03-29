@@ -1,139 +1,155 @@
-# RPC Server (server.ts)
+# RPC Server (server.rs)
 
-**File:** `daemon/src/server.ts`
+**File:** `src/daemon/server.rs`
 
-Express-based JSON-RPC server that provides the HTTP endpoint for all daemon operations. Handles method routing, SSE streaming, keepalive pings, and graceful shutdown.
+Axum-based JSON-RPC server that provides the HTTP endpoint for all daemon operations. Handles method routing, SSE streaming for `session.send`, keepalive pings, auth middleware, and graceful shutdown.
 
 ## Purpose
 
 - Provide a single `POST /rpc` endpoint for all JSON-RPC methods
-- Route requests to the appropriate handler based on the `method` field
+- Route requests to method-specific handlers based on the `method` field
 - Stream responses for `session.send` via SSE (Server-Sent Events)
-- Send keepalive pings to prevent idle timeouts
+- Send keepalive pings to prevent idle SSH tunnel timeouts
+- Apply Bearer token auth middleware when the daemon is in auth mode
 - Handle graceful shutdown on SIGTERM/SIGINT
 
-## Server Configuration
+## AppState
 
-```typescript
-const PORT = parseInt(process.env.DAEMON_PORT || "9100", 10);
-const HOST = "127.0.0.1"; // Only accessible via SSH tunnel
+Shared application state injected into every request handler via Axum's `State` extractor:
+
+```rust
+pub struct AppState {
+    pub session_pool: SessionPool,
+    pub skill_manager: SkillManager,
+    pub start_time: Instant,
+    pub shutdown: Arc<Notify>,
+    pub config: DaemonConfig,
+    pub token_store: TokenStore,
+}
 ```
 
-The server binds to localhost only. The port is configurable via the `DAEMON_PORT` environment variable.
+## Router
 
-## Components
+The router is built by `build_router(state)`:
 
-The server creates two singleton instances at startup:
-
-```typescript
-const sessionPool = new SessionPool();
-const skillManager = new SkillManager();
+```rust
+pub fn build_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/rpc", post(handle_rpc))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::auth_middleware,
+        ))
+        .with_state(state)
+}
 ```
 
-It also records `startTime` for uptime calculations in health checks.
+The auth middleware runs on every request. In plain HTTP mode (default for SSH tunnel access), the middleware is a no-op pass-through. In auth mode (HTTPS), it validates the `Authorization: Bearer <token>` header against the token store.
 
 ## Method Routing
 
-All requests come through `POST /rpc`. The `method` field in the request body determines which handler is invoked:
+All requests arrive at `POST /rpc`. The `method` field in the JSON body determines the handler:
 
-| Method | Handler | Response Type |
+| Method | Response Type | Handler |
 |---|---|---|
-| `session.create` | `handleCreateSession` | JSON |
-| `session.send` | `handleSendMessage` | SSE stream |
-| `session.resume` | `handleResumeSession` | JSON |
-| `session.destroy` | `handleDestroySession` | JSON |
-| `session.list` | `handleListSessions` | JSON |
-| `session.set_mode` | `handleSetMode` | JSON |
-| `session.interrupt` | `handleInterruptSession` | JSON |
-| `session.queue_stats` | `handleQueueStats` | JSON |
-| `session.reconnect` | `handleReconnect` | JSON |
-| `health.check` | `handleHealthCheck` | JSON |
-| `monitor.sessions` | `handleMonitorSessions` | JSON |
+| `session.create` | JSON | `handle_create_session` |
+| `session.send` | SSE stream | `handle_send_message` |
+| `session.resume` | JSON | `handle_resume_session` |
+| `session.destroy` | JSON | `handle_destroy_session` |
+| `session.list` | JSON | `handle_list_sessions` |
+| `session.set_mode` | JSON | `handle_set_mode` |
+| `session.set_model` | JSON | `handle_set_model` |
+| `session.interrupt` | JSON | `handle_interrupt_session` |
+| `session.queue_stats` | JSON | `handle_queue_stats` |
+| `session.reconnect` | JSON | `handle_reconnect` |
+| `health.check` | JSON | `handle_health_check` |
+| `monitor.sessions` | JSON | `handle_monitor_sessions` |
 
-Unknown methods return error code `-32601` (Method not found).
+Missing `method` field returns error `-32600` (Invalid request). Unknown method returns `-32601` (Method not found).
 
 ## SSE Streaming (session.send)
 
-The `handleSendMessage` handler is unique -- it responds with an SSE stream instead of a JSON body:
+`handle_send_message` is the only handler that returns an SSE stream rather than a JSON body. It uses Axum's `Sse` response type:
 
-```typescript
-res.setHeader("Content-Type", "text/event-stream");
-res.setHeader("Cache-Control", "no-cache");
-res.setHeader("Connection", "keep-alive");
-res.setHeader("X-Accel-Buffering", "no"); // Disable nginx buffering
+```rust
+// SSE response headers (set by axum::response::sse::Sse):
+// Content-Type: text/event-stream
+// Cache-Control: no-cache
+// Connection: keep-alive
+// X-Accel-Buffering: no   (disables nginx response buffering)
 ```
 
-### Client Disconnect Handling
-
-The server listens for the `close` event on the response to detect client disconnection:
-
-```typescript
-res.on("close", () => {
-    clientDisconnected = true;
-    sessionPool.clientDisconnect(params.sessionId);
-});
-```
-
-If the client disconnects mid-stream, remaining events are buffered via `sessionPool.bufferEvent()` for later retrieval with `session.reconnect`.
+The handler spawns a `session_pool.send()` task. Events from the task are forwarded onto an mpsc channel. A `ReceiverStream` wraps the channel receiver and drives the SSE response.
 
 ### Keepalive Pings
 
-A keepalive interval sends a `ping` event every 30 seconds to prevent idle SSH tunnel timeouts:
+A keepalive task runs alongside the stream, sending a `Ping {}` event every 30 seconds:
 
-```typescript
-const keepaliveInterval = setInterval(() => {
-    res.write(`data: ${JSON.stringify({ type: "ping" })}\n\n`);
-}, 30000);
+```rust
+// Every 30 seconds:
+StreamEvent::Ping {}
+// Serializes to: data: {"type":"ping"}\n\n
 ```
+
+These prevent idle SSH tunnel timeouts and proxy connection closures.
+
+### Client Disconnect Handling
+
+Axum detects client disconnection when the SSE stream's `Sink` reports an error. The keepalive task is cancelled. If a disconnect is detected while the CLI is still running, the session pool's `client_disconnect()` method is called to start buffering subsequent events. These buffered events can be retrieved later via `session.reconnect`.
 
 ### Stream Termination
 
-The stream ends with `data: [DONE]\n\n` when all events have been sent. If an error occurs, an error event is sent before `[DONE]`.
+The stream ends with `data: [DONE]\n\n` after the terminal event (`result`, `error`, or `interrupted`) has been sent.
 
 ## Method Handlers
 
-### `handleCreateSession`
+### `handle_create_session`
 
-1. Validates the `path` parameter
-2. Syncs skills to the project directory via `skillManager.syncToProject()`
-3. Creates a session in the pool (lightweight -- no process spawned)
-4. Returns `{ sessionId }`
+1. Validates the required `path` param
+2. Optionally reads `mode`, `model`, and `cli_type` params
+3. Calls `skill_manager.sync_to_project(path, cli_type)` to copy shared skills
+4. Calls `session_pool.create(path, mode, model, cli_type)`
+5. Returns `{ "sessionId": "uuid" }`
 
-### `handleSendMessage`
+### `handle_send_message`
 
-See SSE Streaming section above.
+See SSE Streaming section above. Params: `sessionId` (required), `message` (required).
 
-### `handleResumeSession`
+### `handle_resume_session`
 
-Delegates to `sessionPool.resume()`. Returns `{ ok, fallback }`.
+Delegates to `session_pool.resume(session_id, sdk_session_id)`. Returns `{ "ok": true, "fallback": false }`.
 
-### `handleDestroySession`
+### `handle_destroy_session`
 
-Delegates to `sessionPool.destroy()`. Returns `{ ok }`.
+Delegates to `session_pool.destroy(session_id)`. Returns `{ "ok": true }`.
 
-### `handleListSessions`
+### `handle_list_sessions`
 
-Returns `{ sessions: [...] }` with all session info.
+Returns `{ "sessions": [...] }` with `SessionInfo` for all sessions.
 
-### `handleSetMode`
+### `handle_set_mode`
 
-Delegates to `sessionPool.setMode()`. Returns `{ ok }`.
+Delegates to `session_pool.set_mode(session_id, mode)`. Returns `{ "ok": true }`.
 
-### `handleInterruptSession`
+### `handle_set_model`
 
-Delegates to `sessionPool.interrupt()`. Returns `{ ok, interrupted }`.
+Delegates to `session_pool.set_model(session_id, model)`. Returns `{ "ok": true }`.
 
-### `handleQueueStats`
+### `handle_interrupt_session`
 
-Returns queue statistics for a specific session: `{ userPending, responsePending, clientConnected }`.
+Delegates to `session_pool.interrupt(session_id)`. Returns `{ "ok": true, "interrupted": bool }`.
 
-### `handleReconnect`
+### `handle_queue_stats`
 
-Calls `sessionPool.clientReconnect()` to mark the client as reconnected and retrieve buffered events. Returns `{ bufferedEvents: [...] }`.
+Returns `QueueStats` for a session: `{ "userPending": N, "responsePending": N, "clientConnected": bool }`.
 
-### `handleHealthCheck`
+### `handle_reconnect`
 
-Returns daemon health information:
+Calls `session_pool.client_reconnect(session_id)` and returns any buffered events. Returns `{ "bufferedEvents": [...] }`.
+
+### `handle_health_check`
+
+Returns daemon health info:
 
 ```json
 {
@@ -142,41 +158,60 @@ Returns daemon health information:
     "sessionsByStatus": { "idle": 2, "busy": 1 },
     "uptime": 3600,
     "memory": { "rss": 45, "heapUsed": 20, "heapTotal": 30 },
-    "nodeVersion": "v20.11.0",
+    "rustVersion": "1.78.0",
     "pid": 12345
 }
 ```
 
-Memory values are in megabytes.
+Memory values are in megabytes. `rustVersion` reports the Rust toolchain version.
 
-### `handleMonitorSessions`
+### `handle_monitor_sessions`
 
-Returns detailed session information including queue stats for each session.
+Returns detailed session info including per-session queue stats:
+
+```json
+{
+    "sessions": [
+        {
+            "sessionId": "...",
+            "path": "/home/user/project",
+            "status": "busy",
+            "mode": "auto",
+            "cliType": "claude",
+            "model": "claude-sonnet-4-20250514",
+            "sdkSessionId": "sdk-uuid",
+            "createdAt": "2026-03-29T10:00:00Z",
+            "lastActivityAt": "2026-03-29T10:05:00Z",
+            "queue": {
+                "userPending": 1,
+                "responsePending": 0,
+                "clientConnected": true
+            }
+        }
+    ],
+    "totalSessions": 1,
+    "uptime": 3600
+}
+```
 
 ## JSON-RPC Helpers
 
-```typescript
-function rpcSuccess(result: unknown, id?: string): RpcResponse
-function rpcError(code: number, message: string, id?: string): RpcResponse
+`RpcResponse` is defined in `types.rs` with two constructors:
+
+```rust
+RpcResponse::success(result: Value, id: Option<String>) -> RpcResponse
+RpcResponse::error(code: i32, message: impl Into<String>, id: Option<String>) -> RpcResponse
 ```
 
-Standard error codes used:
-- `-32600`: Invalid request (missing method)
+Standard error codes:
+- `-32600`: Invalid request (missing `method`)
 - `-32601`: Method not found
 - `-32602`: Invalid params (missing required params)
-- `-32000`: Internal/application error
-
-## Graceful Shutdown
-
-```typescript
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
-```
-
-The `shutdown()` function calls `sessionPool.destroyAll()` to kill all running Claude processes and clean up, then exits the process.
+- `-32000`: Internal/application error (session not found, path invalid, etc.)
 
 ## Connection to Other Modules
 
 - Uses **SessionPool** for all session lifecycle operations
-- Uses **SkillManager** for skills sync on session creation
-- Imports types from **types.ts** for request/response typing
+- Uses **SkillManager** for skills sync on `session.create`
+- Uses **TokenStore** via `auth_middleware` for request authentication
+- Imports types from **types.rs** for request/response typing

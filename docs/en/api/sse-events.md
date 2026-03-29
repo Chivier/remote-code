@@ -14,13 +14,25 @@ data: {"type":"text","content":"Hello, world!"}
 data: [DONE]
 ```
 
-The stream ends with `data: [DONE]` (not a JSON payload).
+The stream ends with `data: [DONE]` (not a JSON payload). The JSON payloads are serialized `StreamEvent` values from `types.rs`, using the `type` field as a tag.
+
+## Terminal Events
+
+Three event types signal the end of a message exchange. The daemon stops sending events after any of these:
+
+| Type | Condition |
+|---|---|
+| `result` | Claude finished processing successfully |
+| `error` | An error occurred (process crash, timeout, etc.) |
+| `interrupted` | The operation was interrupted via `session.interrupt` |
+
+---
 
 ## Event Types
 
 ### `system`
 
-System events provide metadata about the session. The most common is the `init` subtype, sent when Claude starts processing.
+System events provide metadata about the session. The most common is the `init` subtype, sent at the start of each message exchange when Claude starts up.
 
 ```json
 {
@@ -33,18 +45,18 @@ System events provide metadata about the session. The most common is the `init` 
 
 | Field | Type | Description |
 |---|---|---|
-| `subtype` | string | Event subtype (e.g., `init`) |
+| `subtype` | string | Event subtype (currently only `"init"`) |
 | `session_id` | string | Claude SDK session ID |
-| `model` | string | Model name reported by Claude CLI |
-| `raw` | object | Raw Claude CLI JSON message (optional) |
+| `model` | string | Model name reported by the CLI |
+| `raw` | object | Raw CLI JSON message (optional) |
 
-The Head Node uses the `init` event to display a "Connected to **model** | Mode: **mode**" message on the first interaction.
+The Head Node uses the `init` event to display a "Connected to **model** | Mode: **mode**" message on the first interaction with a session.
 
 ---
 
 ### `partial`
 
-Streaming text deltas. These arrive as Claude generates text, providing real-time character-by-character output.
+Streaming text deltas. These arrive as the CLI generates text, providing real-time output that can be rendered progressively.
 
 ```json
 {
@@ -55,17 +67,17 @@ Streaming text deltas. These arrive as Claude generates text, providing real-tim
 
 | Field | Type | Description |
 |---|---|---|
-| `content` | string | Text delta (may be a few characters or a word) |
+| `content` | string | Text delta (a few characters to a few words) |
 
-The Head Node accumulates these deltas in a buffer and periodically updates the chat message with the current buffer content plus a cursor indicator (`▌`).
+The Head Node accumulates `partial` deltas in a buffer and periodically updates the chat message with the current buffer plus a `▌` cursor indicator. When a complete `text` event arrives, it replaces the accumulated partials.
 
-Partial events can also contain `partial_json` content from tool use streaming, which is rendered the same way.
+`partial` events can also carry `partial_json` content during tool use streaming (JSON being assembled incrementally). The Head Node renders these the same way as text partials.
 
 ---
 
 ### `text`
 
-A complete text block from Claude. This represents a finished text content block in Claude's response.
+A complete text block from the CLI. Represents a finished content block in the response.
 
 ```json
 {
@@ -78,15 +90,15 @@ A complete text block from Claude. This represents a finished text content block
 | Field | Type | Description |
 |---|---|---|
 | `content` | string | Complete text content |
-| `raw` | object | Raw Claude CLI message (optional) |
+| `raw` | object | Raw CLI message (optional) |
 
-If partial events were being streamed, the `text` event replaces the accumulated partial content. If no partials were sent, the text is sent as a new message.
+If `partial` events were being accumulated, the `text` event's content replaces the partial buffer. If no partials were sent (e.g., a short response), the text is sent as a new message.
 
 ---
 
 ### `tool_use`
 
-Indicates Claude is invoking a tool (file write, bash command, etc.).
+Indicates the CLI is invoking a tool (file write, bash command, web fetch, etc.).
 
 ```json
 {
@@ -100,7 +112,7 @@ Indicates Claude is invoking a tool (file write, bash command, etc.).
 }
 ```
 
-or with a status message (from `tool_progress`):
+With a status message (from tool progress events):
 
 ```json
 {
@@ -113,18 +125,39 @@ or with a status message (from `tool_progress`):
 
 | Field | Type | Description |
 |---|---|---|
-| `tool` | string | Tool name (e.g., `Write`, `Bash`, `Read`, `Glob`, `Grep`) |
-| `input` | object | Tool input parameters (optional) |
+| `tool` | string | Tool name (e.g., `Write`, `Bash`, `Read`, `Glob`, `Grep`, `WebFetch`, `AskUserQuestion`) |
+| `input` | object | Tool input parameters (optional; present when available) |
 | `message` | string | Tool progress status message (optional) |
-| `raw` | object | Raw Claude CLI message (optional) |
+| `raw` | object | Raw CLI message (optional) |
 
-The Head Node displays tool use as: `**[Tool: Write]** Creating file...` or with input in a code block.
+**Special case: `AskUserQuestion`**
+
+When `tool` is `"AskUserQuestion"`, the `input` field contains a structured question list:
+
+```json
+{
+    "type": "tool_use",
+    "tool": "AskUserQuestion",
+    "input": [
+        {
+            "header": "Which framework should I use?",
+            "options": [
+                {"description": "FastAPI (async, modern)"},
+                {"description": "Flask (simple, synchronous)"}
+            ],
+            "multiSelect": false
+        }
+    ]
+}
+```
+
+The Head Node passes this to `format_ask_user_question()` and then calls `adapter.send_question()` to display platform-native interactive buttons.
 
 ---
 
 ### `result`
 
-Indicates Claude has finished processing the message. Contains the SDK session ID needed for conversation continuity.
+Indicates the CLI has finished processing the message. Contains the SDK session ID needed for conversation continuity.
 
 ```json
 {
@@ -136,18 +169,18 @@ Indicates Claude has finished processing the message. Contains the SDK session I
 
 | Field | Type | Description |
 |---|---|---|
-| `session_id` | string | Claude SDK session ID for `--resume` |
+| `session_id` | string | SDK session ID for `--resume` on next message |
 | `raw` | object | Raw result including `duration_ms` and `usage` (optional) |
 
-The Head Node captures `session_id` and stores it in the SessionRouter for future `--resume` calls.
+The Head Node captures `session_id` and stores it via `router.update_sdk_session_id()` for future `--resume` calls.
 
-This is a **terminal event** -- the generator stops yielding after a `result`.
+This is a **terminal event**.
 
 ---
 
 ### `queued`
 
-Sent when Claude is busy processing another message and the new message has been queued.
+Sent immediately when the session is busy and the new message has been queued.
 
 ```json
 {
@@ -162,7 +195,7 @@ Sent when Claude is busy processing another message and the new message has been
 
 The Head Node displays: "Message queued (position: 2). Claude is busy with a previous request."
 
-When the queued message is eventually processed, its events will flow through a subsequent `session.send` SSE stream (or be buffered if the client is disconnected).
+When the queued message is eventually processed, its events will flow through a new SSE stream from the implicit next `session.send` call (initiated by the daemon after the previous message completes). If the client is disconnected at that point, the events are buffered for `session.reconnect`.
 
 ---
 
@@ -173,7 +206,7 @@ An error occurred during processing.
 ```json
 {
     "type": "error",
-    "message": "Claude process exited abnormally (code=1, signal=null)"
+    "message": "Claude process exited abnormally (code=1)"
 }
 ```
 
@@ -182,12 +215,12 @@ An error occurred during processing.
 | `message` | string | Human-readable error description |
 
 Common error sources:
-- Claude CLI process exiting with non-zero code
-- Claude CLI process spawn failure
-- Stream idle timeout (no events for 5 minutes)
-- SSH connection loss
+- CLI process exiting with non-zero code
+- CLI process spawn failure (binary not found, permission denied)
+- Stream idle timeout (no events for an extended period)
+- SSH connection loss detected by the daemon
 
-This is a **terminal event** -- the generator stops yielding after an `error`.
+This is a **terminal event**.
 
 ---
 
@@ -201,13 +234,13 @@ Keepalive event sent every 30 seconds to prevent idle SSH tunnel timeouts.
 }
 ```
 
-The Head Node ignores these events. They are purely to keep the HTTP connection alive through proxies and SSH tunnels that might close idle connections.
+The Head Node ignores these events. They exist solely to keep the HTTP connection alive through SSH tunnels and proxies that close idle connections.
 
 ---
 
 ### `interrupted`
 
-Sent when Claude's operation was interrupted (via `session.interrupt` or SIGTERM).
+Sent when the operation was interrupted, either via `session.interrupt` or by an external SIGTERM to the CLI process.
 
 ```json
 {
@@ -215,7 +248,7 @@ Sent when Claude's operation was interrupted (via `session.interrupt` or SIGTERM
 }
 ```
 
-This is a **terminal event** -- the generator stops yielding after an `interrupted`.
+This is a **terminal event**.
 
 ---
 
@@ -241,9 +274,19 @@ data: {"type":"partial","content":"Let me check..."}
 data: {"type":"tool_use","tool":"Bash","input":{"command":"ls -la"}}
 data: {"type":"tool_use","tool":"Bash","message":"Running command..."}
 data: {"type":"partial","content":"Here are the files:\n"}
-data: {"type":"partial","content":"- src/\n- package.json"}
-data: {"type":"text","content":"Here are the files:\n- src/\n- package.json"}
+data: {"type":"partial","content":"- src/\n- Cargo.toml"}
+data: {"type":"text","content":"Here are the files:\n- src/\n- Cargo.toml"}
 data: {"type":"result","session_id":"sdk-456"}
+data: [DONE]
+```
+
+### AskUserQuestion
+
+```
+data: {"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}
+data: {"type":"partial","content":"I need to clarify a few things."}
+data: {"type":"tool_use","tool":"AskUserQuestion","input":[{"header":"Which approach?","options":[{"description":"Option A"},{"description":"Option B"}],"multiSelect":false}]}
+data: {"type":"result","session_id":"sdk-789"}
 data: [DONE]
 ```
 
@@ -259,7 +302,7 @@ data: [DONE]
 ```
 data: {"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}
 data: {"type":"partial","content":"Let me "}
-data: {"type":"error","message":"Claude process exited abnormally (code=1, signal=null)"}
+data: {"type":"error","message":"Claude process exited abnormally (code=1)"}
 data: [DONE]
 ```
 
@@ -271,8 +314,18 @@ data: {"type":"partial","content":"Analyzing..."}
 data: {"type":"ping"}
 data: {"type":"partial","content":" the codebase structure"}
 data: {"type":"ping"}
-data: {"type":"tool_use","tool":"Glob","input":{"pattern":"**/*.ts"}}
-data: {"type":"text","content":"I found 15 TypeScript files..."}
+data: {"type":"tool_use","tool":"Glob","input":{"pattern":"**/*.rs"}}
+data: {"type":"text","content":"I found 15 Rust files..."}
 data: {"type":"result","session_id":"sdk-789"}
+data: [DONE]
+```
+
+### Interrupted Operation
+
+```
+data: {"type":"system","subtype":"init","model":"claude-sonnet-4-20250514"}
+data: {"type":"partial","content":"Let me analyze this large codebase..."}
+data: {"type":"tool_use","tool":"Glob","input":{"pattern":"**/*"}}
+data: {"type":"interrupted"}
 data: [DONE]
 ```

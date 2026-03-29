@@ -1,260 +1,173 @@
-# 会话池 (session-pool.ts)
+# 会话池（session-pool.ts）
 
-`session-pool.ts` 是 Daemon 的核心模块，管理 Claude CLI 会话的生命周期，实现每消息生成进程的架构。
+**文件：** `daemon/src/session-pool.ts`
 
-**源文件**：`daemon/src/session-pool.ts`
+使用每消息生成进程架构管理 Claude CLI 会话。每条用户消息都会生成一个新的 `claude --print` 进程，通过 `--resume` 保持对话连续性。
 
-## 职责
+## 用途
 
-1. 创建和管理 Claude 会话
-2. 为每条消息生成 `claude --print` 子进程
-3. 解析 Claude CLI 的 JSON-lines 输出并转换为 StreamEvent
-4. 管理消息队列（Claude 忙时排队）
-5. 维护会话的 SDK Session ID（用于 `--resume`）
-6. 处理进程中断和清理
+- 维护会话元数据注册表（路径、模式、状态、SDK 会话 ID）
+- 为单条消息生成 Claude CLI 进程
+- 将 Claude CLI 的 stdout JSON 行转换为 StreamEvent 对象
+- 在 Claude 繁忙时处理消息排队
+- 管理进程生命周期（生成、监控、中断、终止）
+- 追踪客户端连接状态以进行响应缓冲
 
-## 内部会话结构
+## 架构：每消息生成进程
 
-```typescript
-interface InternalSession extends ManagedSession {
-    process: ChildProcess | null;   // 当前运行的 Claude 进程（仅处理消息时）
-    queue: MessageQueue;            // 消息队列
-    processing: boolean;            // 是否正在处理消息
-    model: string | null;           // Claude 报告的模型名称
-}
+SessionPool 不维护长期运行的 Claude CLI 进程，而是为每条消息生成新进程：
+
 ```
-
-## SessionPool 类
-
-### 会话创建
-
-#### create(path, mode) -> sessionId
-
-创建一个新会话。这是一个**轻量级操作**——不会启动任何 Claude CLI 进程，只是注册会话状态。
-
-```typescript
-async create(path: string, mode: PermissionMode = "auto"): Promise<string> {
-    if (!existsSync(path)) {
-        throw new Error(`Path does not exist: ${path}`);
-    }
-    const sessionId = uuidv4();
-    // 初始化会话状态...
-    return sessionId;
-}
-```
-
-初始状态：`status = "idle"`，`process = null`，`processing = false`。
-
-### 消息发送
-
-#### `send(sessionId, message) -> AsyncGenerator<StreamEvent>`
-
-发送消息到会话。如果 Claude 正在忙，消息会被排队。
-
-```typescript
-async *send(sessionId: string, message: string): AsyncGenerator<StreamEvent> {
-    const session = this.getSession(sessionId);
-
-    if (session.processing) {
-        const position = session.queue.enqueueUser(message);
-        yield { type: "queued", position };
-        return;
-    }
-
-    yield* this.processMessage(session, message);
-}
-```
-
-### 消息处理
-
-#### `processMessage(session, message) -> AsyncGenerator<StreamEvent>`
-
-核心方法：为单条消息生成 Claude CLI 进程并流式产出事件。
-
-**CLI 命令构建**：
-
-```bash
-claude --print "<message>" \
+claude --print "user message" \
        --output-format stream-json \
        --verbose \
        [--resume <sdkSessionId>] \
        [--dangerously-skip-permissions]
 ```
 
-参数说明：
-- `--print` — 单次处理模式，处理完自动退出
-- `--output-format stream-json` — 输出 JSON-lines 格式
-- `--verbose` — 输出详细的流式事件（包括 stream_event）
-- `--resume` — 恢复之前的对话上下文
-- `--dangerously-skip-permissions` — auto 模式下使用
+**为何采用每消息生成方式？**
+- Claude CLI（v2.1.76+）在不使用 `--print` 的情况下不支持 `--input-format stream-json`
+- 每个进程只在一次消息交换期间存活
+- `--resume` 标志通过引用前一次交互的 SDK 会话 ID 来维持对话上下文
 
-**进程环境**：
+## 内部类型
+
+### InternalSession
+
+用运行时状态扩展 `ManagedSession`：
 
 ```typescript
-spawn("claude", args, {
+interface InternalSession extends ManagedSession {
+    process: ChildProcess | null;  // 当前正在运行的 Claude 进程
+    queue: MessageQueue;           // 每会话消息队列
+    processing: boolean;           // 是否正在处理消息
+    model: string | null;          // 来自 Claude CLI init 的模型名称
+}
+```
+
+## 关键方法
+
+### `create(path: string, mode: PermissionMode) -> string`
+
+创建新会话。这是**轻量级**操作——只注册会话元数据：
+
+1. 验证项目路径在文件系统上存在
+2. 为会话 ID 生成 UUID
+3. 创建状态为 `idle`、无进程、新建 `MessageQueue` 的 `InternalSession`
+4. 返回会话 ID
+
+此时不会生成 Claude CLI 进程。
+
+### `send(sessionId: string, message: string) -> AsyncGenerator<StreamEvent>`
+
+向会话发送消息。返回产出流事件的异步生成器。
+
+**如果 Claude 繁忙**（正在处理另一条消息）：
+- 通过 `MessageQueue.enqueueUser()` 将消息入队
+- 产出一个带队列位置的单个 `queued` 事件
+- 立即返回
+
+**如果 Claude 空闲：**
+- 委托给 `processMessage()`，后者生成 Claude 进程
+
+### `processMessage(session, message) -> AsyncGenerator<StreamEvent>`
+
+生成 Claude CLI 进程并产出事件的内部方法。
+
+**进程生成：**
+
+```typescript
+const child = spawn("claude", args, {
     cwd: session.path,
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, TERM: "dumb" },
 });
 ```
 
-`TERM: "dumb"` 防止 Claude CLI 输出 ANSI 控制字符。
+`TERM: "dumb"` 环境变量防止 Claude CLI 输出 ANSI 转义码。
 
-**事件队列机制**：
+**根据会话状态构建 CLI 参数：**
+- `--print <message>` -- 用户消息
+- `--output-format stream-json` -- JSON 行输出
+- `--verbose` -- 包含系统消息
+- `--resume <sdkSessionId>` -- 继续之前的对话（如果可用）
+- `--dangerously-skip-permissions` -- 仅在 `auto` 模式下
 
-使用内部事件队列和 Promise 实现异步事件产出：
+**stdin** 立即关闭（`child.stdin.end()`），因为 `--print` 模式从参数读取提示词。
 
-```typescript
-const eventQueue: StreamEvent[] = [];
-let resolveWait: (() => void) | null = null;
-let done = false;
+**事件处理：**
 
-const pushEvent = (event: StreamEvent) => {
-    eventQueue.push(event);
-    if (resolveWait) {
-        resolveWait();
-        resolveWait = null;
-    }
-};
-```
+使用 Node.js 的 `readline.createInterface()` 逐行读取 stdout。每行解析为 JSON（`ClaudeStdoutMessage`），并通过 `convertToStreamEvent()` 转换为 `StreamEvent`。
 
-主循环不断从队列取出事件并 yield，当队列为空且进程未结束时，使用 Promise 等待下一个事件：
+事件被推入内部队列。异步生成器在事件到达时产出，使用基于 Promise 的等待机制处理背压。
 
-```typescript
-while (true) {
-    if (eventQueue.length > 0) {
-        const event = eventQueue.shift()!;
-        yield event;
-        if (event.type === "result" || event.type === "error" || event.type === "interrupted") {
-            break;
-        }
-    } else if (done) {
-        break;
-    } else {
-        await new Promise<void>((resolve) => { resolveWait = resolve; });
-    }
-}
-```
+**终止事件：** 生成器在 `result`、`error` 或 `interrupted` 事件时停止。
 
-**stdout 解析**：
+**清理：**
+- `session.process` 设为 null
+- `session.processing` 设为 false
+- `session.status` 设为 `idle`
+- 如果进程仍存活，发送 SIGTERM（3 秒后 SIGKILL 兜底）
+- 如果有排队消息，通过 `processQueuedMessage()` 自动处理下一条
 
-使用 `readline.createInterface` 逐行读取 stdout，每行解析为 JSON：
+### `convertToStreamEvent(msg: ClaudeStdoutMessage) -> StreamEvent`
 
-```typescript
-stdoutReader.on("line", (line) => {
-    const parsed = JSON.parse(line);  // ClaudeStdoutMessage
+将 Claude CLI 的 stdout JSON 消息映射为内部 StreamEvent 格式：
 
-    // 提取模型名称
-    if (parsed.type === "system" && parsed.subtype === "init") {
-        session.model = parsed.model;
-    }
+| Claude CLI 类型 | StreamEvent 类型 | 内容 |
+|---|---|---|
+| `system`（init） | `system` | 模型名称、会话 ID |
+| `assistant`（文本块） | `text` | 拼接的文本内容 |
+| `assistant`（工具块） | `tool_use` | 工具名称、输入数据 |
+| `stream_event`（content_block_delta, text） | `partial` | 文本增量 |
+| `stream_event`（content_block_delta, partial_json） | `partial` | 部分 JSON |
+| `stream_event`（content_block_start, tool_use） | `tool_use` | 工具名称 |
+| `tool_progress` | `tool_use` | 工具名称、状态消息 |
+| `result` | `result` | 会话 ID |
 
-    // 转换为 StreamEvent
-    const event = this.convertToStreamEvent(parsed);
+来自 `result` 事件的 `session_id` 字段被捕获并存储为 `session.sdkSessionId`，供后续 `--resume` 调用使用。
 
-    // 捕获 SDK Session ID
-    if (event.session_id) {
-        session.sdkSessionId = event.session_id;
-    }
+### `resume(sessionId, sdkSessionId?) -> { ok, fallback }`
 
-    pushEvent(event);
-});
-```
+恢复会话。在每消息生成模式下，这只是更新 `sdkSessionId`，使下一次 `send()` 使用 `--resume`。同时调用 `queue.onClientReconnect()`。
 
-**进程退出处理**：
+### `destroy(sessionId) -> boolean`
 
-```typescript
-child.on("exit", (code, signal) => {
-    // exit code 0 是正常的（--print 模式处理完就退出）
-    if (code !== 0 && code !== null) {
-        pushEvent({
-            type: "error",
-            message: `Claude process exited abnormally (code=${code}, signal=${signal})`,
-        });
-    }
-    done = true;
-});
-```
+销毁会话：
+1. 终止所有正在运行的 Claude 进程（SIGTERM，5 秒后 SIGKILL）
+2. 将状态设为 `destroyed`
+3. 清空消息队列
+4. 从池中移除会话
 
-**清理**：
+### `setMode(sessionId, mode) -> boolean`
 
-```typescript
-finally {
-    session.process = null;
-    session.processing = false;
-    session.status = "idle";
+更新会话的权限模式。在下一次 `send()` 时生效（下次进程生成时）。
 
-    // 终止残留进程
-    if (child && !child.killed) {
-        child.kill("SIGTERM");
-        setTimeout(() => {
-            if (!child.killed) child.kill("SIGKILL");
-        }, 3000);
-    }
+### `interrupt(sessionId) -> boolean`
 
-    // 处理排队的下一条消息
-    if (session.queue.hasUserPending() && session.status === "idle") {
-        const next = session.queue.dequeueUser();
-        if (next) {
-            this.processQueuedMessage(session, next.message);
-        }
-    }
-}
-```
+中断当前的 Claude 操作：
+1. 向正在运行的 Claude CLI 进程发送 SIGTERM
+2. 清空消息队列
+3. 如果有活跃操作被中断，返回 `true`
 
-### 事件转换
+### `listSessions() -> SessionInfo[]`
 
-#### convertToStreamEvent(msg: ClaudeStdoutMessage) -> StreamEvent
+返回所有会话的信息：sessionId、path、status、mode、sdkSessionId、model、createdAt、lastActivityAt。
 
-将 Claude CLI 的原始 JSON 输出转换为统一的 StreamEvent 格式。
+### `clientDisconnect(sessionId)` / `bufferEvent(sessionId, event)` / `clientReconnect(sessionId)`
 
-| Claude CLI 类型 | StreamEvent 类型 | 说明 |
-|----------------|-----------------|------|
-| `system` | `system` | 系统消息（init 等），提取 model |
-| `assistant` (text blocks) | `text` | 完整的文本响应 |
-| `assistant` (tool blocks) | `tool_use` | 工具调用 |
-| `stream_event` (content_block_delta, text) | `partial` | 流式文本增量 |
-| `stream_event` (content_block_delta, partial_json) | `partial` | 流式 JSON 增量 |
-| `stream_event` (content_block_start, tool_use) | `tool_use` | 工具调用开始 |
-| `tool_progress` | `tool_use` | 工具执行进度 |
-| `result` | `result` | 完成事件，包含 session_id |
+MessageQueue 客户端连接状态管理的代理方法。当 SSE 连接断开时由 server.ts 使用。
 
-### 其他方法
+### `getQueueStats(sessionId) -> { userPending, responsePending, clientConnected }`
 
-#### resume(sessionId, sdkSessionId)
+返回会话的队列统计信息。
 
-恢复会话。在每消息生成模式下，只需更新 `sdkSessionId`，下次 `send()` 时会自动使用 `--resume`。
+### `destroyAll() -> void`
 
-#### destroy(sessionId)
-
-销毁会话：终止运行中的进程，清空队列，从 Map 中移除。
-
-进程终止使用 SIGTERM，3 秒后如果未终止则发送 SIGKILL。
-
-#### setMode(sessionId, mode)
-
-更新权限模式。下次生成进程时会使用新模式。
-
-#### interrupt(sessionId) -> boolean
-
-中断当前操作。向 Claude CLI 进程发送 SIGTERM，清空消息队列。
-
-返回 `true` 表示确实有操作被中断，`false` 表示会话空闲。
-
-#### clientDisconnect(sessionId) / clientReconnect(sessionId)
-
-管理客户端连接状态，用于消息队列的响应缓冲。
-
-#### getQueueStats(sessionId)
-
-返回消息队列统计：待处理用户消息数、缓冲响应数、客户端连接状态。
-
-#### destroyAll()
-
-销毁所有会话。在服务器关闭时调用。
+销毁所有会话。在守护进程关闭时调用。
 
 ## 与其他模块的关系
 
-- **server.ts** — 调用所有公开方法
-- **message-queue.ts** — 每个会话持有一个 MessageQueue 实例
-- **types.ts** — 使用 StreamEvent、SessionStatus、PermissionMode 等类型
+- **server.ts** 创建单一的 `SessionPool` 实例，并为所有会话相关的 RPC 处理器调用其方法
+- 使用 **MessageQueue** 进行每会话消息缓冲
+- 从 **types.ts** 导入类型（ManagedSession、SessionInfo、StreamEvent、PermissionMode 等）

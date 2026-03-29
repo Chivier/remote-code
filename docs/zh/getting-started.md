@@ -1,220 +1,233 @@
 # 快速开始
 
-本指南将帮助你从零开始部署和运行 Codecast。
+本指南将带你从零开始完成 Codecast 的部署。完成后，你将拥有一个运行在 Discord、Telegram 或飞书上的机器人，用于与远程机器上的 AI 命令行工具进行交互。
 
 ## 前提条件
 
-### 本地环境（Head Node）
+### 本地机器（Head Node）
 
-- **Python 3.11+**
-- **pip** 包管理器
-- **SSH 密钥** 或密码，用于连接远程机器
-- **Discord Bot Token** 和/或 **Telegram Bot Token**
+- Python 3.10 或更高版本
+- pip（Python 包管理器）
+- 已为远程机器配置好 SSH 密钥（或密码认证）
+- 至少一个平台的机器人 token：Discord、Telegram 或飞书
 
-### 远程环境（Daemon 目标机器）
+### 远程机器
 
-- **Node.js 18+**（需要在 PATH 中或通过 `node_path` 配置指定路径）
-- **npm**（用于安装 Daemon 依赖）
-- **Claude CLI**（`claude` 命令需在 PATH 中可用，通常安装在 `~/.local/bin/`）
-- **SSH 服务** 已启用且可从本地访问
+- 可从本地机器通过 SSH 访问
+- 至少安装并完成认证的 AI 命令行工具之一：
+  - Claude CLI（`claude` 在 PATH 中）
+  - Codex（`codex` 在 PATH 中）
+  - Gemini CLI（`gemini` 在 PATH 中）
+  - OpenCode（`opencode` 在 PATH 中）
 
-## 安装步骤
+远程机器不需要 Node.js 或 npm。Codecast 守护进程是一个单一的静态 Rust 二进制文件，通过 SCP 自动部署。
 
-### 1. 克隆项目
+## 机器人配置
+
+### Discord
+
+1. 前往 [Discord Developer Portal](https://discord.com/developers/applications)。
+2. 创建一个新应用，然后在"Bot"下创建机器人并复制 token。
+3. 在"Privileged Gateway Intents"下启用"Message Content Intent"。
+4. 在"OAuth2 > URL Generator"中，选择 `bot` 和 `applications.commands` 两个 scope，权限勾选：Send Messages、Manage Messages、Read Message History。
+5. 使用生成的链接将机器人邀请到你的服务器。
+
+### Telegram
+
+1. 在 Telegram 中找到 [@BotFather](https://t.me/BotFather)。
+2. 发送 `/newbot` 并按提示操作。
+3. 复制 BotFather 提供的 token。
+
+### 飞书（Lark）
+
+1. 前往[飞书开放平台](https://open.feishu.cn/app)创建应用。
+2. 在"权限管理"中添加：`im:message`、`im:message:send_as_bot`。
+3. 在"事件订阅"中添加 `im.message.receive_v1` 事件。
+4. 复制 App ID 和 App Secret。
+5. 配置 webhook 端点，或使用飞书内置的机器人消息功能。
+
+## 安装
+
+### 方式一：从 PyPI 安装（推荐）
+
+```bash
+pip install codecast
+```
+
+此命令会安装所有依赖并提供 `codecast` 命令。
+
+### 方式二：从源码安装
 
 ```bash
 git clone https://github.com/Chivier/codecast.git
-cd remote-code
-```
-
-### 2. 安装 Python 依赖
-
-```bash
-pip install -r requirements.txt
-```
-
-主要依赖包括：
-- `asyncssh` — 异步 SSH 连接
-- `aiohttp` — 异步 HTTP 客户端
-- `discord.py` — Discord Bot SDK
-- `python-telegram-bot` — Telegram Bot SDK
-- `PyYAML` — YAML 配置文件解析
-
-也可以使用可编辑模式安装，同时注册 `codecast` 命令行工具：
-
-```bash
+cd codecast
 pip install -e .
 ```
 
-安装后可以直接在终端运行 `codecast` 来启动，而无需使用 `python -m head.main`。两种方式安装的依赖完全相同。
+`pip install -e .` 以可编辑模式安装包，并提供 `codecast` 命令。
 
-### 3. 创建配置文件
+### 手动构建守护进程（可选）
+
+如果 `daemon.auto_deploy` 已启用（默认值），守护进程二进制文件会在首次连接时自动部署到远程机器。如果需要手动构建：
 
 ```bash
-cp config.example.yaml config.yaml
+cargo build --release
 ```
 
-编辑 `config.yaml`，配置你的远程机器和 Bot token。详细配置说明请参考 [配置指南](./configuration.md)。
+输出的二进制文件位于 `target/release/codecast-daemon`。将其复制到本地机器的 `~/.codecast/daemon/codecast-daemon`，系统将从此处部署。
 
-### 4. 配置 Bot Token
+### 在远程机器上安装 AI 命令行工具
 
-#### Discord Bot
+每台远程机器至少需要安装一个 AI 命令行工具。以 Claude CLI 为例：
 
-1. 前往 [Discord Developer Portal](https://discord.com/developers/applications)
-2. 创建一个新的 Application
-3. 在 "Bot" 页面创建 Bot 并获取 Token
-4. 在 "OAuth2" 页面生成邀请链接，确保勾选以下权限：
-   - `bot` scope
-   - `applications.commands` scope（用于斜杠命令）
-   - Send Messages
-   - Read Message History
-   - Use Slash Commands
-5. 将 Bot 邀请到你的 Discord 服务器
-6. 在 "Bot" 页面启用 "Message Content Intent"
+```bash
+# 在远程机器上执行
+npm install -g @anthropic-ai/claude-code
+claude auth login
+```
 
-#### Telegram Bot
+验证命令行工具是否正常工作：
 
-1. 在 Telegram 中找到 [@BotFather](https://t.me/BotFather)
-2. 发送 `/newbot` 创建新 Bot
-3. 获取 Bot Token
+```bash
+claude --print "Hello" --output-format stream-json
+```
 
-### 5. 设置环境变量
+## 配置
+
+### 1. 创建配置文件
+
+配置文件的主要存放位置是 `~/.codecast/config.yaml`。创建目录并复制示例文件：
+
+```bash
+mkdir -p ~/.codecast
+cp /path/to/codecast/config.example.yaml ~/.codecast/config.yaml
+```
+
+也可以将 `config.yaml` 放在当前工作目录中作为开发时的备用方案。
+
+### 2. 设置环境变量
+
+导出你的机器人 token：
 
 ```bash
 export DISCORD_TOKEN="your-discord-bot-token"
 export TELEGRAM_TOKEN="your-telegram-bot-token"
+export LARK_APP_ID="your-lark-app-id"
+export LARK_APP_SECRET="your-lark-app-secret"
 ```
 
-或者直接在 `config.yaml` 中填写 token（不推荐，因为 token 是敏感信息）。
+配置值支持 `${ENV_VAR}` 语法，因此 token 不会硬编码在文件中。
 
-### 6. 配置远程机器
+### 3. 配置远程机器
 
-在 `config.yaml` 的 `machines` 部分配置你的远程机器：
+编辑 `~/.codecast/config.yaml`，在 `peers:` 下添加你的机器：
 
 ```yaml
-machines:
-  my-gpu:
-    host: gpu.example.com
-    user: myuser
-    ssh_key: ~/.ssh/id_rsa
+peers:
+  gpu-1:
+    host: gpu1.example.com
+    user: your-user
     daemon_port: 9100
     default_paths:
-      - /home/myuser/my-project
+      - /home/your-user/project-a
+      - /home/your-user/project-b
+
+bot:
+  discord:
+    token: ${DISCORD_TOKEN}
+    allowed_channels:
+      - 1234567890123456789
+
+default_mode: auto
 ```
 
-确保：
-- SSH 密钥认证已配置好（或使用密码）
-- 远程机器上已安装 Node.js 和 Claude CLI
-- Claude CLI 已通过 `claude login` 完成认证
+有关所有可用选项（包括 Telegram、飞书、ProxyJump 和文件转发），请参阅[配置指南](./configuration.md)。
 
-### 7. 构建 Daemon（可选）
+## 使用 TUI 向导完成首次配置
 
-如果启用了 `auto_deploy: true`（默认），系统会自动构建和部署 Daemon。
-
-手动构建：
+如果你是首次使用 Codecast，TUI（终端 UI）提供了一个交互式配置向导：
 
 ```bash
-cd daemon
-npm install
-npm run build
-cd ..
+codecast tui
 ```
 
-## 启动
+通过 TUI 可以配置机器、测试 SSH 连接并启动会话，无需直接编辑 YAML 文件。
+
+## 运行 Codecast
+
+启动 Head Node：
 
 ```bash
-python -m head.main
+codecast
 ```
 
-或指定配置文件路径：
+指定特定配置文件：
 
 ```bash
-python -m head.main /path/to/config.yaml
+codecast /path/to/config.yaml
 ```
 
-启动后你会看到类似以下日志：
+你应该会看到类似如下的输出：
 
 ```
-2026-03-14 10:00:00 [codecast] INFO: Discord bot configured
-2026-03-14 10:00:00 [codecast] INFO: Telegram bot configured
-2026-03-14 10:00:00 [codecast] INFO: Codecast started with 2 bot(s)
-2026-03-14 10:00:00 [codecast] INFO: Machines: my-gpu
-2026-03-14 10:00:00 [codecast] INFO: Default mode: auto
-2026-03-14 10:00:01 [head.bot_discord] INFO: Discord bot logged in as RemoteClaude#1234
-2026-03-14 10:00:01 [head.bot_discord] INFO: Synced 12 slash command(s)
-2026-03-14 10:00:01 [head.bot_telegram] INFO: Telegram bot started
+INFO: Discord bot configured
+INFO: Telegram bot configured
+INFO: Codecast started with 2 bot(s)
+INFO: Peers: gpu-1
+INFO: Default mode: auto
 ```
 
-## 首次使用
+## 开始第一个会话
 
-### 在 Discord 中
+1. 打开 Discord、Telegram 或飞书。
+2. 在允许的频道或聊天中，使用 `/start` 命令：
 
-1. 在允许的频道中使用斜杠命令：
+   ```
+   /start gpu-1 /home/your-user/project-a
+   ```
 
-```
-/start machine:my-gpu path:/home/myuser/my-project
-```
+3. Codecast 将会：
+   - 建立到 `gpu-1` 的 SSH 隧道
+   - 如果守护进程尚未部署，则自动部署（auto-deploy）
+   - 在远程机器上启动守护进程
+   - 如果已配置，同步技能文件
+   - 在项目目录中创建 AI 会话
 
-2. 等待系统建立 SSH 隧道、部署 Daemon（首次需要几十秒）、创建会话
-3. 看到 "Session started" 消息后，直接发送文字消息与 Claude 对话
-4. 使用 `/exit` 分离会话，`/resume` 恢复会话
+4. 发送消息开始交互：
 
-### 在 Telegram 中
+   ```
+   这个项目中有哪些文件？
+   ```
 
-1. 向 Bot 发送命令：
+5. 响应将实时流式回传。
 
-```
-/start my-gpu /home/myuser/my-project
-```
-
-2. 之后直接发送消息与 Claude 对话
-
-## 自动部署流程
-
-首次连接到一台远程机器时，如果 `daemon.auto_deploy` 为 `true`，系统会自动执行以下步骤：
-
-1. 在本地构建 Daemon 代码（`npm run build`）
-2. 通过 SCP 将 `package.json`、`package-lock.json` 和 `dist/` 目录上传到远程机器
-3. 在远程机器上执行 `npm install --production`
-4. 使用 `nohup` 启动 Daemon 进程
-5. 轮询健康检查端点直到 Daemon 就绪（最多 30 秒）
-
-## 停止
-
-按 `Ctrl+C` 或发送 `SIGTERM` 信号即可优雅关闭：
+要使用 Claude 以外的特定 CLI 启动会话：
 
 ```
-2026-03-14 10:30:00 [codecast] INFO: Received SIGINT, shutting down...
-2026-03-14 10:30:00 [codecast] INFO: Cleaning up...
-2026-03-14 10:30:00 [codecast] INFO: Closing tunnel to my-gpu
-2026-03-14 10:30:01 [codecast] INFO: Codecast stopped
+/start gpu-1 /home/your-user/project --cli codex
 ```
 
-系统会依次：停止所有 Bot → 关闭 HTTP 客户端 → 关闭所有 SSH 隧道 → 取消残余异步任务。
+支持的 CLI 类型：`claude`、`codex`、`gemini`、`opencode`。
 
-> **注意**：停止 Head Node 不会停止远程 Daemon 进程。Daemon 会继续在远程机器上运行，下次连接时可以复用。
+## 停止 Codecast
 
-## 常见问题
+按 `Ctrl+C` 或向进程发送 `SIGTERM`。Head Node 将会：
 
-### Daemon 启动失败
+1. 优雅地停止所有机器人
+2. 关闭守护进程客户端的 HTTP 会话
+3. 关闭所有 SSH 隧道
+4. 取消待处理的任务
 
-- 检查远程机器上的 Node.js 版本（需要 18+）
-- 检查 `~/.codecast/daemon.log` 中的错误日志
-- 确保 `claude` 命令在远程机器的 PATH 中
+Head Node 关闭时不会销毁远程守护进程上的会话。之后可以用 `/resume` 恢复它们。
 
-### SSH 连接失败
+## 常见问题排查
 
-- 确认 SSH 密钥认证正常（手动 `ssh user@host` 测试）
-- 如果需要跳板机，确保 `proxy_jump` 配置正确
-- 检查防火墙是否允许 SSH 端口
+**"Could not connect to machine"** -- 检查 SSH 主机、用户名和密钥是否正确。在终端运行 `ssh user@host` 测试连接。如果机器位于跳板机后面，请参阅[配置指南](./configuration.md)中的 `proxy_jump` 选项。
 
-### Claude CLI 认证
+**"Daemon not found after deploy"** -- 检查远程机器上 `~/.codecast/daemon/` 是否存在，且二进制文件有执行权限。查看远程机器上的 `~/.codecast/daemon.log` 获取错误信息。
 
-- 在远程机器上运行 `claude login` 完成认证
-- 确保环境变量 `ANTHROPIC_API_KEY` 已设置（如果使用 API key 模式）
+**"claude: command not found"** -- Claude CLI 未在远程机器上安装或不在 PATH 中。守护进程继承 SSH 会话的 PATH；请确保通过普通 SSH 登录时命令行工具可以访问。
 
-### Discord 命令不显示
+**机器人没有响应** -- 确认机器人 token 有效，且频道或用户 ID 在允许列表中。Discord 请检查 Message Content Intent 是否已启用。
 
-- 斜杠命令同步可能需要几分钟
-- 确保 Bot 有 `applications.commands` 权限
-- 尝试在 Discord Developer Portal 中清除已注册的命令后重启
+**会话卡住** -- 在聊天中使用 `/interrupt` 或 `/stop` 中断当前 AI 操作。使用 `/status` 检查队列状态。

@@ -1,486 +1,544 @@
-# Bot 命令参考
+# 机器人命令参考
 
-Codecast 在 Discord 和 Telegram 中提供一致的命令接口。Discord 支持斜杠命令（带自动补全），Telegram 使用标准命令语法。
+本文档说明 Discord、Telegram 和飞书机器人中所有可用的命令。
 
-## 命令一览
+## 命令汇总
 
-| 命令 | 说明 | 需要活跃会话 |
-|------|------|:---:|
-| `/start` | 创建新的 Claude 会话 | 否 |
-| `/resume` | 恢复之前的会话 | 否 |
-| `/new` | 在当前目录开启新会话（自动分离当前会话） | 是 |
-| `/clear` | 销毁当前会话并在同目录重新开始 | 是 |
-| `/ls` | 列出机器或会话 | 否 |
-| `/exit` | 分离当前会话 | 是 |
-| `/rm` | 销毁指定会话 | 否 |
-| `/mode` | 切换权限模式 | 是 |
-| `/rename` | 重命名当前会话（格式：词-词） | 是 |
-| `/status` | 显示当前会话状态 | 是 |
-| `/interrupt` | 中断 Claude 当前操作 | 是 |
-| `/health` | 检查 Daemon 健康状态 | 否 |
-| `/monitor` | 查看会话详情和队列状态 | 否 |
-| `/add-machine` | 添加远程机器 | 否 |
-| `/remove-machine` | 移除远程机器 | 否 |
-| `/update` | 拉取最新代码并重启（仅管理员） | 否 |
-| `/restart` | 重启 Head Node（仅管理员） | 否 |
-| `/help` | 显示帮助信息 | 否 |
-
-## 命令详解
-
-### /start
-
-创建一个新的 Claude 会话，连接到指定的远程机器和项目路径。
-
-**语法**：
-```
-/start <machine_id> <path>
-```
-
-**参数**：
-- `machine_id` — 远程机器 ID（在 config.yaml 中定义）
-- `path` — 远程机器上的项目路径
-
-**示例**：
-```
-/start gpu-1 /home/user/my-project
-```
-
-**行为**：
-1. 建立到目标机器的 SSH 隧道（如果不存在）
-2. 如果 Daemon 未运行，自动部署并启动
-3. 同步技能文件到远程项目目录
-4. 在 Daemon 上创建新会话
-5. 将当前频道/聊天绑定到该会话
-
-如果当前频道已有活跃会话，旧会话会被自动分离（detach）。
-
-**Discord 特性**：
-- `machine` 参数支持自动补全（基于 config.yaml 中的机器列表，排除纯跳板机）
-- `path` 参数支持自动补全（基于所选机器的 `default_paths`）
+| 命令 | 参数 | 说明 |
+|---|---|---|
+| `/start` | `<machine> <path> [--cli <type>]` | 启动新的 AI 会话 |
+| `/resume` | `<session_name_or_id>` | 恢复之前分离的会话 |
+| `/new` | 无 | 在同一目录启动新会话 |
+| `/clear` | 无 | 销毁当前会话并在同目录重新开始 |
+| `/exit` | 无 | 分离当前会话 |
+| `/stop` | 无 | 中断 AI 当前操作 |
+| `/interrupt` | 无 | 中断 AI 当前操作（/stop 的别名） |
+| `/ls` | `machine` 或 `session [machine]` | 列出机器或会话 |
+| `/rm-session` | `<name_or_id>` | 按名称或 ID 销毁特定会话 |
+| `/rm` | `<machine> <path>` | 销毁某台机器某路径下的所有会话 |
+| `/mode` | `<auto\|code\|plan\|ask>` | 切换权限模式 |
+| `/model` | `<model_name>` | 切换当前会话使用的 AI 模型 |
+| `/tool-display` | `<timer\|append\|batch>` | 切换工具调用的显示方式 |
+| `/rename` | `<new_name>` | 重命名当前会话 |
+| `/status` | 无 | 显示当前会话信息 |
+| `/health` | `[machine]` | 检查守护进程健康状态 |
+| `/monitor` | `[machine]` | 查看会话详情和队列 |
+| `/add-machine` | `<name> [host] [user]` | 添加远程机器 |
+| `/remove-machine` | `<machine>` | 移除远程机器 |
+| `/update` | 无 | Git pull 并重启（仅管理员） |
+| `/restart` | 无 | 重启 Head Node（仅管理员） |
+| `/help` | 无 | 显示可用命令 |
 
 ---
 
-### /resume
+## `/start`
 
-恢复之前分离或断开的会话。
+在远程机器上启动新的 AI 会话。
 
-**语法**：
+**用法：**
+
 ```
-/resume <session_id>
+/start <machine_id> <path> [--cli <type>]
 ```
 
-**参数**：
-- `session_id` — Daemon 会话 ID（可以从 `/ls session` 的输出中获取）
+**参数：**
 
-**示例**：
+| 参数 | 说明 |
+|---|---|
+| `machine_id` | config.yaml 中定义的远程机器 ID |
+| `path` | 远程机器上项目目录的绝对路径 |
+| `--cli <type>` | 使用的 AI 命令行工具：`claude`、`codex`、`gemini` 或 `opencode`（默认：`claude`） |
+
+**简写标志：** 可以用 `--codex`、`--gemini`、`--opencode` 代替 `--cli <type>`。
+
+**示例：**
+
 ```
+/start gpu-1 /home/user/my-project
+/start gpu-1 /home/user/my-project --cli codex
+/start gpu-1 /home/user/my-project --gemini
+```
+
+**执行过程：**
+
+1. 建立到该机器的 SSH 隧道（如果尚未建立）。
+2. 如果守护进程未运行，部署并启动守护进程。
+3. 如果已配置，将技能文件同步到项目目录。
+4. 在守护进程上创建新的 AI 会话。
+5. 在本地数据库中注册该会话。
+6. 发送确认消息，显示会话名称和当前模式。
+
+会话名称自动以形容词-名词格式生成，例如 `bright-falcon` 或 `smooth-dove`。可以用 `/rename` 重命名会话。
+
+**Discord：** 斜杠命令，`machine` 参数（来自已配置机器）和 `path` 参数（来自 config 中的 `default_paths`）均支持自动补全。
+
+---
+
+## `/resume`
+
+恢复之前分离的会话。
+
+**用法：**
+
+```
+/resume <session_name_or_id>
+```
+
+**参数：**
+
+| 参数 | 说明 |
+|---|---|
+| `session_name_or_id` | 会话名称（如 `bright-falcon`）或守护进程 UUID |
+
+**示例：**
+
+```
+/resume bright-falcon
 /resume a1b2c3d4-e5f6-7890-abcd-ef1234567890
 ```
 
-**行为**：
-1. 在会话记录中查找指定的会话
-2. 重新建立 SSH 隧道到对应的机器
-3. 在 Daemon 上恢复会话（如果可能使用 SDK 会话 ID 恢复完整上下文）
-4. 将当前频道绑定到该会话
+**执行过程：**
 
-如果直接恢复失败，系统可能会创建一个新会话并注入历史上下文（fallback 模式）。
+1. 在本地数据库中按名称或 ID 查找会话。
+2. 建立到会话所在机器的 SSH 隧道。
+3. 通知守护进程恢复该会话。
+4. 将该会话重新注册为当前频道的活跃会话。
+5. 后续消息将继续原有对话上下文。
 
 ---
 
-### /new
+## `/new`
 
-在当前会话所在的目录开启一个全新的 Claude 会话，自动分离当前会话。
+在与当前会话相同的目录启动新的 AI 会话，自动分离当前会话。
 
-**语法**：
+**用法：**
+
 ```
 /new
 ```
 
-**行为**：
-1. 当前会话被分离（不销毁）
-2. 在同一机器和同一路径上创建新会话
-3. 新会话绑定到当前频道
-
-相当于先执行 `/exit`，再以相同的机器和路径执行 `/start`，无需重新输入连接信息。
+相当于先执行 `/exit`，再以相同的机器、路径和 CLI 类型执行 `/start`。适用于在不重新输入连接信息的情况下获得干净的上下文环境。
 
 ---
 
-### /clear
+## `/clear`
 
 销毁当前会话并立即在同一目录启动新会话。
 
-**语法**：
+**用法：**
+
 ```
 /clear
 ```
 
-**行为**：
-1. 当前会话的 Claude 进程被终止
-2. 会话记录被标记为 destroyed
-3. 在同一机器和路径上创建新会话
-4. 新会话绑定到当前频道
-
-与 `/new` 的区别：`/clear` 会彻底销毁旧会话，而 `/new` 只是分离旧会话（旧会话可通过 `/resume` 恢复）。
+与 `/new` 不同，旧会话会被完全销毁而非分离。
 
 ---
 
-### /ls
+## `/exit`
 
-列出机器或会话信息。
+分离当前会话，不销毁它。
 
-**语法**：
-```
-/ls machine          # 列出所有机器
-/ls session [machine] # 列出会话，可选按机器过滤
-```
+**用法：**
 
-**子命令**：
-
-#### /ls machine
-
-列出所有配置的远程机器及其状态。
-
-输出格式：
-```
-Machines:
-🟢 gpu-1 (gpu1.example.com) ⚡
-  Paths: `/home/user/project-a`, `/home/user/project-b`
-🔴 gpu-2 (gpu2.lab.internal) 💤
-```
-
-状态图标：
-- 🟢 在线 / 🔴 离线
-- ⚡ Daemon 运行中 / 💤 Daemon 未运行
-
-纯跳板机（无 `default_paths` 且被其他机器用作 `proxy_jump`）不会显示在列表中。
-
-#### /ls session [machine]
-
-列出所有会话或指定机器上的会话。
-
-输出格式：
-```
-Sessions:
-● `a1b2c3d4...` gpu-1:/home/user/project-a [bypass] (active)
-○ `e5f67890...` gpu-1:/home/user/project-b [code] (detached)
-```
-
-状态图标：
-- `●` 活跃 / `○` 已分离 / `✕` 已销毁
-
-**Discord 特性**：
-- `target` 参数有下拉选择框：`machine` 或 `session`
-- `machine` 参数支持自动补全
-
----
-
-### /exit
-
-分离（detach）当前频道的活跃会话。会话不会被销毁，可以稍后使用 `/resume` 恢复。
-
-**语法**：
 ```
 /exit
 ```
 
-**行为**：
-1. 将当前会话状态从 `active` 改为 `detached`
-2. 记录到 `session_log` 表中
-3. 解除当前频道与会话的绑定
-4. 返回会话 ID 供后续恢复使用
+远程机器上的 AI 进程继续运行。之后可以用会话名称通过 `/resume` 重新连接。
+
+**示例输出：**
+
+```
+Detached from session on gpu-1:/home/user/project
+Use /resume bright-falcon to reconnect.
+```
 
 ---
 
-### /rm
+## `/stop` 和 `/interrupt`
 
-销毁指定机器和路径上的会话。
+中断 AI 当前的操作。
 
-**语法**：
+**用法：**
+
+```
+/stop
+/interrupt
+```
+
+两个命令等效，均会：
+
+1. 向正在运行的 AI 进程发送中断信号。
+2. 清空消息队列。
+3. 会话保持活跃，可以继续发送消息。
+
+**输出：**
+
+- 如果 AI 正在处理中："Interrupted current operation."
+- 如果 AI 处于空闲："No active operation to interrupt."
+
+---
+
+## `/ls`
+
+列出机器或会话。
+
+**用法：**
+
+```
+/ls machine
+/ls session [machine_id]
+```
+
+**示例：**
+
+```
+/ls machine
+/ls session
+/ls session gpu-1
+```
+
+**机器列表输出：**
+
+```
+Machines:
+  gpu-1 (gpu1.example.com) [online, daemon running]
+    Paths: /home/user/project-a, /home/user/project-b
+  gpu-2 (gpu2.lab.internal) [offline]
+```
+
+**会话列表输出：**
+
+```
+Sessions:
+  bright-falcon  gpu-1:/home/user/project  [bypass] active
+  smooth-dove    gpu-1:/home/user/other    [code]   detached
+```
+
+---
+
+## `/rm-session`
+
+按名称或 ID 销毁特定会话。
+
+**用法：**
+
+```
+/rm-session <name_or_id>
+```
+
+**示例：**
+
+```
+/rm-session bright-falcon
+/rm-session a1b2c3d4-e5f6-7890-abcd-ef1234567890
+```
+
+该命令会终止该会话的 AI 进程，并在数据库中将其标记为已销毁。
+
+---
+
+## `/rm`
+
+销毁某台机器某路径下匹配的所有会话。
+
+**用法：**
+
 ```
 /rm <machine_id> <path>
 ```
 
-**参数**：
-- `machine_id` — 机器 ID
-- `path` — 项目路径
+**示例：**
 
-**示例**：
 ```
-/rm gpu-1 /home/user/my-project
+/rm gpu-1 /home/user/project
 ```
 
-**行为**：
-1. 查找匹配的所有会话（活跃和已分离的）
-2. 在 Daemon 上销毁这些会话（终止 Claude 进程）
-3. 在 SessionRouter 中标记为 `destroyed`
+指定机器与路径组合下所有活跃和已分离的会话都会被销毁。
 
 ---
 
-### /mode
+## `/mode`
 
 切换当前会话的权限模式。
 
-**语法**：
+**用法：**
+
 ```
-/mode <mode>
-```
-
-**参数**：
-- `mode` — 权限模式：`auto`、`code`、`plan` 或 `ask`
-
-**四种模式说明**：
-
-| 模式 | 显示名称 | CLI 标志 | 说明 |
-|------|---------|----------|------|
-| `auto` | bypass | `--dangerously-skip-permissions` | 完全自动，跳过所有权限确认 |
-| `code` | code | — | 自动接受文件编辑，bash 命令需确认 |
-| `plan` | plan | — | 只读分析模式，不修改任何文件 |
-| `ask` | ask | — | 所有操作都需要确认 |
-
-> **注意**：`auto` 模式在显示时会显示为 `bypass`，因为它使用了 `--dangerously-skip-permissions` 标志。输入 `bypass` 也会被自动映射到 `auto`。
-
-**示例**：
-```
-/mode auto     # 切换到完全自动模式
-/mode plan     # 切换到只读分析模式
+/mode <auto|code|plan|ask>
 ```
 
-**Discord 特性**：
-- `mode` 参数有下拉选择框，每个选项附带说明文字
+| 模式 | 说明 |
+|---|---|
+| `auto` | 完全自动化。AI 可以无需确认地读取、写入和执行任何内容。在机器人输出中显示为"bypass"。 |
+| `code` | 自动接受文件编辑。AI 在运行 shell 命令前需要确认。 |
+| `plan` | 只读分析。AI 可以读取文件但不能进行任何更改。 |
+| `ask` | 确认所有操作。每次工具调用都需要审批。 |
+
+**示例：**
+
+```
+/mode plan
+```
+
+**Discord：** 下拉选择，每种模式附有描述文字。
 
 ---
 
-### /rename
+## `/model`
+
+切换当前会话使用的 AI 模型。
+
+**用法：**
+
+```
+/model <model_name>
+```
+
+**示例：**
+
+```
+/model claude-sonnet-4-20250514
+/model claude-opus-4-20250514
+```
+
+模型切换在下一条消息发送时生效。使用 `/status` 确认当前活跃的模型。
+
+---
+
+## `/tool-display`
+
+切换 AI 工作时工具调用（文件读取、shell 命令等）的显示方式。
+
+**用法：**
+
+```
+/tool-display <timer|append|batch>
+```
+
+| 模式 | 说明 |
+|---|---|
+| `timer` | AI 工作时显示"Working Xs"计时器。所有结果最后一并发送。此为默认模式。 |
+| `append` | 逐步展示每次工具调用，实时呈现执行过程。 |
+| `batch` | 汇总所有工具调用，最后发送一条摘要消息。 |
+
+**示例：**
+
+```
+/tool-display timer
+```
+
+---
+
+## `/rename`
 
 重命名当前会话。
 
-**语法**：
+**用法：**
+
 ```
-/rename <新名称>
+/rename <new_name>
 ```
 
-**参数**：
-- `新名称` — 必须为 `词-词` 格式（形容词-名词，例如 `smooth-dove`、`fast-hawk`）
+**参数：**
 
-**示例**：
+| 参数 | 说明 |
+|---|---|
+| `new_name` | `词-词` 格式的新名称（如 `fast-hawk`、`smooth-dove`） |
+
+**示例：**
+
 ```
 /rename fast-hawk
 ```
 
-新名称存储在会话注册表中，可以在 `/resume` 命令中代替 UUID 使用。
+新名称会存储在会话注册表中，可在 `/resume` 命令中使用。
 
 ---
 
-### /status
+## `/status`
 
-显示当前频道活跃会话的详细状态。
+显示当前会话的状态和队列统计信息。
 
-**语法**：
+**用法：**
+
 ```
 /status
 ```
 
-**输出示例**：
+**示例输出：**
+
 ```
-Session Status
+Session: bright-falcon
 Machine: gpu-1
-Path: /home/user/my-project
+Path: /home/user/project
 Mode: bypass
 Status: active
-Session ID: a1b2c3d4e5f6...
+CLI: claude
+Model: claude-sonnet-4-20250514
 Queue: 0 pending messages
 Buffered: 0 responses
 ```
 
 ---
 
-### /interrupt
+## `/health`
 
-中断 Claude 当前正在进行的操作。向 Claude CLI 进程发送 SIGTERM 信号。
+检查远程机器上守护进程的健康状态。
 
-**语法**：
-```
-/interrupt
-```
+**用法：**
 
-**行为**：
-- 如果 Claude 正在处理请求，终止当前进程并清空消息队列
-- 如果 Claude 空闲，提示 "Claude is not currently processing any request."
-- 进程被终止后，会话保持可用状态，可以继续发送新消息
-
----
-
-### /health
-
-检查指定机器上 Daemon 的健康状态。
-
-**语法**：
 ```
 /health [machine_id]
 ```
 
-**参数**：
-- `machine_id`（可选） — 机器 ID。不指定时检查当前会话的机器，或检查所有已连接的机器
+如果未指定机器，则检查当前会话所在机器，或检查所有已连接机器。
 
-**输出示例**：
+**示例输出：**
+
 ```
 Daemon Health - gpu-1
 Status: OK
-Uptime: 2h15m30s
+Uptime: 2h 15m 30s
 Sessions: 3 (idle: 2, busy: 1)
-Memory: 85MB RSS, 42/65MB heap
-Node: v20.11.0 (PID: 12345)
 ```
-
-**Discord 特性**：
-- `machine` 参数支持自动补全
 
 ---
 
-### /monitor
+## `/monitor`
 
-查看指定机器上所有会话的详细信息和队列状态。
+查看远程机器上会话详情和队列状态。
 
-**语法**：
+**用法：**
+
 ```
 /monitor [machine_id]
 ```
 
-**参数**：
-- `machine_id`（可选） — 机器 ID。不指定时查看当前会话的机器，或查看所有已连接的机器
+**示例输出：**
 
-**输出示例**：
 ```
-Monitor - gpu-1 (uptime: 2h15m30s, 2 session(s))
+Monitor - gpu-1 (uptime: 2h 15m 30s, 2 session(s))
 
-● `a1b2c3d4...` idle [bypass | claude-sonnet-4-20250514]
-  Path: /home/user/project-a
-  Client: connected | Queue: 0 pending, 0 buffered
+  bright-falcon  idle [bypass | claude-sonnet-4-20250514]
+    Path: /home/user/project
+    Client: connected | Queue: 0 pending, 0 buffered
 
-◉ `e5f67890...` busy [code | claude-sonnet-4-20250514]
-  Path: /home/user/project-b
-  Client: connected | Queue: 1 pending, 0 buffered
+  smooth-dove  busy [code | claude-sonnet-4-20250514]
+    Path: /home/user/other
+    Client: disconnected | Queue: 1 pending, 5 buffered
 ```
-
-状态图标：
-- `●` 空闲（idle）
-- `◉` 繁忙（busy）
-- `✕` 错误或已销毁
-
-**Discord 特性**：
-- `machine` 参数支持自动补全
 
 ---
 
-### /add-machine
+## `/add-machine`
 
-添加新的远程机器到配置中。
+向配置中添加新的远程机器。
 
-**语法**：
+**用法：**
+
 ```
-/add-machine <名称> [主机] [用户] [选项]
+/add-machine <name> [host] [user]
 /add-machine --from-ssh
 ```
 
-**参数**：
-- `名称` — 机器的简短标识符（用于其他命令）
-- `主机`（可选）— IP 地址或主机名（可从 SSH 配置中自动解析）
-- `用户`（可选）— SSH 用户名（可从 SSH 配置中自动解析）
-- `选项`（可选）— 额外的 SSH 选项（端口、跳板机等）
-- `--from-ssh` — 从 `~/.ssh/config` 浏览并导入
+**示例：**
 
-**示例**：
 ```
 /add-machine gpu-3 10.0.1.52 alice
 /add-machine gpu-3 --from-ssh
 ```
 
-机器配置会立即写入 `config.yaml`，首次 `/start` 时自动部署 Daemon。
+`--from-ssh` 选项会读取 `~/.ssh/config` 并提供交互式主机选择界面进行导入。机器配置会立即写入 `config.yaml`，首次 `/start` 时自动部署守护进程。
 
 ---
 
-### /remove-machine
+## `/remove-machine`
 
 从配置中移除一台远程机器。
 
-**语法**：
+**用法：**
+
 ```
 /remove-machine <machine_id>
 ```
 
-**参数**：
-- `machine_id` — 要移除的机器 ID
-
-**示例**：
-```
-/remove-machine gpu-3
-```
-
-如果该机器上存在活跃或已分离的会话，命令会要求确认。机器配置会从 `config.yaml` 中删除。
+如果该机器上存在活跃或已分离的会话，系统会要求确认。机器条目会从 `config.yaml` 中删除。
 
 ---
 
-### /update
+## `/update`
 
-拉取最新代码并重启 Head Node。**仅管理员可用。**
+拉取最新代码并重启 Head Node。仅管理员可用。
 
-**语法**：
+**用法：**
+
 ```
 /update
 ```
 
-**行为**：
-1. 在项目目录执行 `git pull --ff-only`
-2. 通过 `os.execv()` 原地替换运行中的进程（保持 PID 不变）
-3. 重启完成后发送确认消息
-
-需要在配置中将你的用户 ID 添加到 `admin_users` 列表。
+在项目目录运行 `git pull`，然后替换正在运行的进程。需要在配置的 `admin_users` 中包含你的用户 ID。
 
 ---
 
-### /restart
+## `/restart`
 
-重启 Head Node，不拉取新代码。**仅管理员可用。**
+不拉取新代码直接重启 Head Node。仅管理员可用。
 
-**语法**：
+**用法：**
+
 ```
 /restart
 ```
 
-通过 `os.execv()` 原地替换运行中的进程。适用于加载配置变更或从异常状态恢复。需要在配置中将你的用户 ID 添加到 `admin_users` 列表。
+适用于加载配置变更或从异常状态中恢复。需要在配置的 `admin_users` 中包含你的用户 ID。
 
 ---
 
-### /help
+## `/help`
 
-显示所有可用命令的帮助信息。
+显示可用命令列表。
 
-**语法**：
+**用法：**
+
 ```
 /help
 ```
 
-## 消息转发
+---
 
-除了命令之外，所有非 `/` 开头的消息都会被直接转发给当前活跃的 Claude 会话。
+## 发送消息
 
-**流式响应显示**：
-- 使用 SSE 接收 Claude 的流式回复
-- 每 1.5 秒更新一次消息内容（在末尾显示 `▌` 光标）
-- 当消息长度超过 1800 字符时，自动分割为新消息
-- Discord 单条消息限制 2000 字符，Telegram 限制 4096 字符
-- 代码块不会被中间截断
+启动或恢复会话后，在频道中发送的任何非命令消息都会被转发给 AI。如果你输入的内容以 `/` 开头但不是已知的机器人命令，也会直接转发给 AI——这对于向 AI 命令行工具本身传递斜杠命令很有用。
 
-**并发保护**：同一频道不允许同时发送多条消息。如果 Claude 正在处理，新消息会提示 "Claude is still processing. Please wait..."
+响应实时流式回传。AI 处理期间会显示光标指示器或计时器。在 Discord 上，"机器人正在输入..."指示器和定期状态更新会在长时间操作期间让你了解进度。
 
-**Discord 心跳**：在 Claude 处理期间，每 25 秒发送一次状态更新消息，显示 Claude 当前正在做什么（思考中 / 使用工具 / 写回复），避免 Discord 的 3 分钟超时感。
+如果在 AI 尚未完成上一条消息时发送新消息，新消息会自动排队并按顺序处理。
 
-## Discord 斜杠命令
+## 交互式问答（AskUserQuestion）
 
-Discord 版本使用 `app_commands`（斜杠命令），相比文本命令有以下优势：
+当 AI 使用 `AskUserQuestion` 工具时，Codecast 会以交互控件而非纯文本的形式呈现问题：
 
-- **自动补全** — 机器名和路径会出现补全建议
-- **参数类型检查** — 系统自动验证参数格式
-- **下拉选择** — `mode` 和 `target` 等参数有预定义选项
-- **延迟响应** — 部分命令使用 `defer()` 避免 Discord 的 3 秒交互超时
-- **打字指示器** — Claude 处理期间显示 "Bot is typing..."
+- **Discord** -- 消息下方的按钮，点击选择。
+- **Telegram** -- 内联键盘，点击选择。
+- **飞书** -- 交互卡片，点击选择。
+
+对于多选题，每个选项会显示为单独的按钮或键。你的选择会作为回复发送给 AI。
+
+## 文件转发
+
+当 AI 响应中包含与已配置转发规则匹配的文件路径时，Codecast 可以自动从远程机器下载该文件并发送到聊天中，无需任何手动命令。
+
+文件转发通过 `config.yaml` 中的 `file_forward` 配置。详情请参阅[配置指南](./configuration.md)。
+
+## 平台差异
+
+| 功能 | Discord | Telegram | 飞书 |
+|---|---|---|---|
+| 命令方式 | 带弹窗的斜杠命令 | 文本命令 | 文本命令 |
+| 自动补全 | 机器 ID、路径、模式 | 不可用 | 不可用 |
+| 消息长度限制 | 2000 字符 | 4096 字符 | 平台限制 |
+| 交互式问答 | 按钮 | 内联键盘 | 交互卡片 |
+| 访问控制 | 频道白名单 | 用户 ID 或会话白名单 | 会话 ID 白名单 |
+| 管理员命令 | `admin_users` 中的用户 ID | `admin_users` 中的用户 ID | `admin_users` 中的用户 ID |

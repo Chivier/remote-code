@@ -1,147 +1,105 @@
-# 技能管理 (skill-manager.ts)
+# 技能管理器（skill-manager.ts）
 
-`skill-manager.ts` 实现了技能文件的同步机制，将共享的 CLAUDE.md 和 .claude/skills/ 文件复制到项目目录。
+**文件：** `daemon/src/skill-manager.ts`
 
-**源文件**：`daemon/src/skill-manager.ts`
+负责将 CLAUDE.md 和 `.claude/skills/` 文件从共享源目录同步到远程机器上的项目目录。
 
-## 职责
+## 用途
 
-1. 在创建会话时将共享技能文件同步到项目目录
-2. 列出共享技能和项目级技能
-3. 保护已有的项目级技能文件不被覆盖
+- 在会话创建时将共享技能同步到项目目录
+- 遵循"技能共享"模型，通过中央源提供通用技能
+- 避免覆盖已有的项目特定技能
 
-## 设计理念：Skillshare 模型
+## 架构
 
-Codecast 使用一种 "技能共享"（Skillshare）模型来管理 Claude 的技能文件：
+技能在系统中经历两个阶段的流转：
 
-1. **中央技能目录** — 由 Head Node 通过 SCP 同步到远程机器的 `~/.codecast/skills/` 目录
-2. **按项目分发** — 创建会话时，技能文件被复制到项目目录
-3. **不覆盖原则** — 如果项目目录已有同名文件，不会被覆盖
+1. **Head Node -> 远程机器**：Head Node 上的 SSHManager 通过 SCP 将技能从本地 `skills.shared_dir` 复制到远程机器的 `~/.codecast/skills`。
+2. **远程技能目录 -> 项目**：守护进程上的 SkillManager 在创建会话时将 `~/.codecast/skills` 中的文件复制到特定项目目录。
 
-这样每个项目可以有自己的定制技能，同时也可以通过中央目录共享通用技能。
-
-## 类结构
+## 类：SkillManager
 
 ```typescript
 class SkillManager {
-    private skillsSourceDir: string;  // 共享技能目录
-    // 默认: ~/.codecast/skills
+    private skillsSourceDir: string;
+    // 默认：~/.codecast/skills
 }
 ```
+
+源目录默认为 `~/.codecast/skills`（基于 `HOME` 环境变量）。
 
 ## 关键方法
 
-### syncToProject(projectPath: string)
+### `syncToProject(projectPath: string) -> { synced: string[], skipped: string[] }`
 
-将共享技能同步到指定的项目目录。返回同步和跳过的文件列表。
+将技能从共享源同步到项目目录。在 `session.create` 期间由 `server.ts` 调用。
 
-```typescript
-syncToProject(projectPath: string): { synced: string[]; skipped: string[] }
-```
+**行为：**
 
-**同步流程**：
+1. 如果源目录不存在，返回空结果（不报错）
+2. **CLAUDE.md**：将 `CLAUDE.md` 从源目录复制到项目根目录，但**仅当项目中不存在该文件时**。已有的项目专属 `CLAUDE.md` 不会被覆盖。
+3. **.claude/skills/**：创建目标目录结构并递归复制技能文件，**跳过目标中已存在的文件**。
 
-1. 检查共享技能目录是否存在，不存在则直接返回空结果
+**返回值：**
+- `synced`：已复制的相对文件路径列表
+- `skipped`：跳过的相对文件路径列表（附有"(already exists)"后缀）
 
-2. **同步 CLAUDE.md**：
-   ```
-   ~/.codecast/skills/CLAUDE.md → /project/CLAUDE.md
-   ```
-   仅在目标文件不存在时复制。
+### `listSharedSkills() -> string[]`
 
-3. **同步 .claude/skills/ 目录**：
-   ```
-   ~/.codecast/skills/.claude/skills/* → /project/.claude/skills/*
-   ```
-   递归复制，自动创建目标目录，已存在的文件不覆盖。
+列出共享源目录中所有可用的技能。返回相对于源目录的文件路径。
 
-**返回示例**：
-```typescript
-{
-    synced: ["CLAUDE.md", ".claude/skills/my-skill.md"],
-    skipped: [".claude/skills/existing-skill.md (already exists)"]
-}
-```
+### `listProjectSkills(projectPath: string) -> string[]`
 
-### listSharedSkills() -> string[]
+列出特定项目目录中存在的所有技能。返回形如 `CLAUDE.md` 和 `.claude/skills/...` 的文件路径。
 
-列出共享技能目录中的所有技能文件。
+## 私有方法
 
-```typescript
-listSharedSkills(): string[]
-// 返回: ["CLAUDE.md", ".claude/skills/skill-a.md", ".claude/skills/skill-b.md"]
-```
+### `copyDirRecursive(sourceDir, targetDir, synced, skipped)`
 
-### listProjectSkills(projectPath: string) -> string[]
+从源目录递归复制文件到目标目录。根据需要创建子目录。对每个文件：
+- 如果目标不存在：复制文件，添加到 `synced`
+- 如果目标已存在：跳过，添加到 `skipped`
 
-列出项目目录中的技能文件。
+### `listFilesRecursive(dir, baseDir, result)`
 
-```typescript
-listProjectSkills("/home/user/project"): string[]
-// 返回: ["CLAUDE.md", ".claude/skills/project-specific.md"]
-```
+递归列出目录中的文件，存储相对于基础目录的路径。
 
-## 内部方法
+## 不覆盖原则
 
-### copyDirRecursive(sourceDir, targetDir, synced, skipped)
+SkillManager 永远不会覆盖已有文件。这是有意为之的设计决策：
 
-递归复制目录内容。对每个文件：
-- 如果是目录，递归进入
-- 如果是文件且目标不存在，复制
-- 如果是文件且目标已存在，跳过（记录到 `skipped`）
+- 项目可能有包含项目特定指令的 `CLAUDE.md`
+- 共享技能提供一个项目可以定制的基准
+- 初次同步后，项目文件优先级更高
 
-### listFilesRecursive(dir, baseDir, result)
+## 示例
 
-递归列出目录中的所有文件，生成相对路径。
-
-## 文件结构
-
-共享技能目录的预期结构：
+给定如下源目录结构：
 
 ```
 ~/.codecast/skills/
-├── CLAUDE.md                    # 全局 Claude 指令
+├── CLAUDE.md
 └── .claude/
     └── skills/
-        ├── coding-standards.md  # 编码规范
-        ├── review-checklist.md  # 代码审查清单
-        └── team-patterns.md    # 团队模式
+        ├── coding-standards.md
+        └── review-checklist.md
 ```
 
-同步后项目目录：
+以及如下项目状态：
 
 ```
 /home/user/project/
-├── CLAUDE.md                    # 从共享目录复制（如果之前没有）
-├── .claude/
-│   └── skills/
-│       ├── coding-standards.md  # 从共享目录复制
-│       ├── review-checklist.md  # 从共享目录复制
-│       └── project-api.md       # 项目原有的，未被覆盖
-└── src/
-    └── ...
+├── CLAUDE.md                    # 已存在——不会覆盖
+└── .claude/
+    └── skills/
+        └── coding-standards.md  # 已存在——不会覆盖
 ```
 
-## 同步链路
-
-技能文件的完整同步路径：
-
-```
-本地 ./skills/ 目录
-    │
-    ▼ (Head Node: ssh_manager.sync_skills via SCP)
-远程 ~/.codecast/skills/
-    │
-    ▼ (Daemon: skill_manager.syncToProject via fs.copyFile)
-远程 /project/.claude/skills/
-```
-
-1. Head Node 使用 SCP 将本地 `skills/` 目录同步到远程的 `~/.codecast/skills/`
-2. Daemon 在创建会话时将 `~/.codecast/skills/` 中的文件复制到项目目录
-
-这两步使用相同的 "不覆盖" 策略。
+结果：
+- `synced`：`[".claude/skills/review-checklist.md"]`
+- `skipped`：`["CLAUDE.md (already exists)", ".claude/skills/coding-standards.md (already exists)"]`
 
 ## 与其他模块的关系
 
-- **server.ts** — 在 `handleCreateSession` 中调用 `syncToProject()`
-- Head Node 的 **ssh_manager.py** — 通过 SCP 同步技能到远程的共享目录
+- **server.ts** 创建单一的 SkillManager 实例，在 `session.create` 期间调用 `syncToProject()`
+- Head Node 的 **ssh_manager.py** 负责在远程机器上填充技能源目录

@@ -1,43 +1,45 @@
-# RPC 服务器 (server.ts)
+# RPC 服务器（server.ts）
 
-`server.ts` 是 Daemon 的 HTTP 入口，基于 Express 框架实现 JSON-RPC 服务器。
+**文件：** `daemon/src/server.ts`
 
-**源文件**：`daemon/src/server.ts`
+基于 Express 的 JSON-RPC 服务器，为所有守护进程操作提供 HTTP 端点。负责方法路由、SSE 流、保活 ping 和优雅关闭。
 
-## 职责
+## 用途
 
-1. 提供 JSON-RPC HTTP 端点 (`POST /rpc`)
-2. 路由所有 RPC 方法到对应的处理函数
-3. 处理 SSE 流式响应（`session.send`）
-4. 管理 SSE 连接的心跳和断连检测
-5. 提供健康检查和监控端点
-6. 优雅关闭
+- 为所有 JSON-RPC 方法提供单一的 `POST /rpc` 端点
+- 根据 `method` 字段将请求路由到对应的处理器
+- 通过 SSE（Server-Sent Events）为 `session.send` 流式传输响应
+- 发送保活 ping，防止空闲超时
+- 处理 SIGTERM/SIGINT 时的优雅关闭
 
 ## 服务器配置
 
 ```typescript
 const PORT = parseInt(process.env.DAEMON_PORT || "9100", 10);
-const HOST = "127.0.0.1";  // 仅绑定本地回环地址
+const HOST = "127.0.0.1"; // 只能通过 SSH 隧道访问
 ```
 
-端口通过环境变量 `DAEMON_PORT` 配置，默认 9100。绑定地址固定为 `127.0.0.1`，只能通过 SSH 隧道访问。
+服务器只绑定到 localhost。端口可通过 `DAEMON_PORT` 环境变量配置。
 
-## 全局实例
+## 组件
+
+服务器在启动时创建两个单例实例：
 
 ```typescript
 const sessionPool = new SessionPool();
 const skillManager = new SkillManager();
-const startTime = Date.now();  // 用于计算 uptime
 ```
 
-## RPC 方法路由
+同时记录 `startTime` 用于健康检查中的运行时间计算。
 
-所有请求发送到 `POST /rpc`，根据 `method` 字段路由：
+## 方法路由
 
-| 方法 | 处理函数 | 响应类型 |
-|------|----------|---------|
+所有请求通过 `POST /rpc` 传入。请求体中的 `method` 字段决定调用哪个处理器：
+
+| 方法 | 处理器 | 响应类型 |
+|---|---|---|
 | `session.create` | `handleCreateSession` | JSON |
-| `session.send` | `handleSendMessage` | SSE |
+| `session.send` | `handleSendMessage` | SSE 流 |
 | `session.resume` | `handleResumeSession` | JSON |
 | `session.destroy` | `handleDestroySession` | JSON |
 | `session.list` | `handleListSessions` | JSON |
@@ -48,135 +50,137 @@ const startTime = Date.now();  // 用于计算 uptime
 | `health.check` | `handleHealthCheck` | JSON |
 | `monitor.sessions` | `handleMonitorSessions` | JSON |
 
-## 方法处理
+未知方法返回错误码 `-32601`（方法不存在）。
 
-### handleCreateSession
+## SSE 流（session.send）
 
-1. 验证必需参数 `path`
-2. 调用 `skillManager.syncToProject(path)` 同步技能文件
-3. 调用 `sessionPool.create(path, mode)` 创建会话
-4. 返回 `{ sessionId }`
-
-### handleSendMessage（SSE 流式）
-
-这是最复杂的处理函数，使用 SSE 进行流式响应：
+`handleSendMessage` 处理器特殊——它以 SSE 流而非 JSON 正文响应：
 
 ```typescript
-// 设置 SSE 响应头
 res.setHeader("Content-Type", "text/event-stream");
 res.setHeader("Cache-Control", "no-cache");
 res.setHeader("Connection", "keep-alive");
-res.setHeader("X-Accel-Buffering", "no");  // 禁用 nginx 缓冲
+res.setHeader("X-Accel-Buffering", "no"); // 禁用 nginx 缓冲
 ```
 
-**客户端断连检测**：
+### 客户端断连处理
+
+服务器监听响应上的 `close` 事件以检测客户端断连：
 
 ```typescript
-let clientDisconnected = false;
 res.on("close", () => {
     clientDisconnected = true;
     sessionPool.clientDisconnect(params.sessionId);
 });
 ```
 
-当客户端断连时，后续的事件会通过 `sessionPool.bufferEvent()` 缓存，而非尝试写入已关闭的连接。
+如果客户端在流式传输过程中断连，剩余事件通过 `sessionPool.bufferEvent()` 缓冲，供后续使用 `session.reconnect` 检索。
 
-**心跳机制**：
+### 保活 Ping
+
+保活定时器每 30 秒发送一个 `ping` 事件，防止空闲 SSH 隧道超时：
 
 ```typescript
 const keepaliveInterval = setInterval(() => {
     res.write(`data: ${JSON.stringify({ type: "ping" })}\n\n`);
-}, 30000);  // 每 30 秒
+}, 30000);
 ```
 
-防止 SSH 隧道和 HTTP 连接因空闲而超时。
+### 流终止
 
-**事件流式推送**：
+所有事件发送完毕后，流以 `data: [DONE]\n\n` 结束。如果发生错误，错误事件在 `[DONE]` 之前发送。
 
-```typescript
-const stream = sessionPool.send(params.sessionId, params.message);
-for await (const event of stream) {
-    if (clientDisconnected) {
-        sessionPool.bufferEvent(params.sessionId, event);
-        continue;
-    }
-    res.write(`data: ${JSON.stringify(event)}\n\n`);
-}
-res.write("data: [DONE]\n\n");
-res.end();
-```
+## 方法处理器
 
-### handleHealthCheck
+### `handleCreateSession`
 
-返回系统健康信息：
+1. 验证 `path` 参数
+2. 通过 `skillManager.syncToProject()` 将技能同步到项目目录
+3. 在池中创建会话（轻量级——不生成进程）
+4. 返回 `{ sessionId }`
 
-```typescript
+### `handleSendMessage`
+
+参见上方的 SSE 流部分。
+
+### `handleResumeSession`
+
+委托给 `sessionPool.resume()`。返回 `{ ok, fallback }`。
+
+### `handleDestroySession`
+
+委托给 `sessionPool.destroy()`。返回 `{ ok }`。
+
+### `handleListSessions`
+
+返回 `{ sessions: [...] }`，包含所有会话信息。
+
+### `handleSetMode`
+
+委托给 `sessionPool.setMode()`。返回 `{ ok }`。
+
+### `handleInterruptSession`
+
+委托给 `sessionPool.interrupt()`。返回 `{ ok, interrupted }`。
+
+### `handleQueueStats`
+
+返回特定会话的队列统计：`{ userPending, responsePending, clientConnected }`。
+
+### `handleReconnect`
+
+调用 `sessionPool.clientReconnect()` 将客户端标记为已重连，并检索缓冲的事件。返回 `{ bufferedEvents: [...] }`。
+
+### `handleHealthCheck`
+
+返回守护进程健康信息：
+
+```json
 {
-    ok: true,
-    sessions: number,              // 会话总数
-    sessionsByStatus: {            // 按状态分类
-        idle: number,
-        busy: number,
+    "ok": true,
+    "sessions": 3,
+    "sessionsByStatus": { "idle": 2, "busy": 1 },
+    "uptime": 3600,
+    "memory": {
+        "rss": 45,
+        "heapUsed": 20,
+        "heapTotal": 30
     },
-    uptime: number,                // 运行时间（秒）
-    memory: {
-        rss: number,               // RSS 内存 (MB)
-        heapUsed: number,          // 已用堆内存 (MB)
-        heapTotal: number,         // 总堆内存 (MB)
-    },
-    nodeVersion: string,           // Node.js 版本
-    pid: number,                   // 进程 ID
+    "nodeVersion": "v20.11.0",
+    "pid": 12345
 }
 ```
 
-### handleMonitorSessions
+内存值以兆字节为单位。
 
-返回所有会话的详细信息，包含队列状态：
+### `handleMonitorSessions`
 
-```typescript
-{
-    sessions: [{
-        sessionId, path, status, mode, model,
-        sdkSessionId, createdAt, lastActivityAt,
-        queue: { userPending, responsePending, clientConnected }
-    }],
-    totalSessions: number,
-    uptime: number,
-}
-```
+返回每个会话的详细信息，包括队列统计。
 
 ## JSON-RPC 辅助函数
 
 ```typescript
-function rpcSuccess(result: unknown, id?: string): RpcResponse {
-    return { result, id };
-}
-
-function rpcError(code: number, message: string, id?: string): RpcResponse {
-    return { error: { code, message }, id };
-}
+function rpcSuccess(result: unknown, id?: string): RpcResponse
+function rpcError(code: number, message: string, id?: string): RpcResponse
 ```
 
-标准错误码：
-- `-32600` — 无效请求（缺少 method）
-- `-32601` — 方法不存在
-- `-32602` — 无效参数
-- `-32000` — 内部错误
+使用的标准错误码：
+- `-32600`：无效请求（缺少 method）
+- `-32601`：方法不存在
+- `-32602`：无效参数（缺少必要参数）
+- `-32000`：内部/应用程序错误
 
 ## 优雅关闭
 
 ```typescript
-async function shutdown(signal: string): Promise<void> {
-    await sessionPool.destroyAll();  // 销毁所有会话，终止所有 Claude 进程
-    process.exit(0);
-}
-
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 ```
 
+`shutdown()` 函数调用 `sessionPool.destroyAll()` 终止所有正在运行的 Claude 进程并清理，然后退出进程。
+
 ## 与其他模块的关系
 
-- **session-pool.ts** — 调用会话管理的所有方法
-- **skill-manager.ts** — 在创建会话时调用 `syncToProject()`
-- **types.ts** — 使用所有 RPC 参数类型定义
+- 使用 **SessionPool** 进行所有会话生命周期操作
+- 使用 **SkillManager** 在会话创建时同步技能
+- 从 **types.ts** 导入请求/响应的类型定义

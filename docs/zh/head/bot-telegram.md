@@ -1,171 +1,112 @@
-# Telegram Bot (bot_telegram.py)
+# Telegram Bot（bot_telegram.py）
 
-`bot_telegram.py` 实现了 Telegram 平台的 Bot，使用 python-telegram-bot v20+ 的异步接口。
+**文件：** `head/bot_telegram.py`
 
-**源文件**：`head/bot_telegram.py`
+使用 python-telegram-bot v20+ 异步处理器实现的 Telegram 机器人。
 
-## 职责
+## 用途
 
-1. 实现 Telegram 平台特定的消息发送和编辑
-2. 注册命令处理器和消息处理器
-3. 管理 Telegram Bot 生命周期（轮询模式）
-4. 用户权限验证
+- 实现 Codecast 的 Telegram 平台层
+- 注册命令和消息处理器
+- 处理基于用户的访问控制
+- 支持 Telegram 的 4096 字符消息限制
+- 提供 Markdown 格式化及纯文本回退
 
-## 类结构
+## 类：TelegramBot
+
+继承 `BotBase`，增加 Telegram 特定功能。
 
 ```python
 class TelegramBot(BotBase):
-    telegram_config: TelegramConfig       # Telegram 配置
-    _app: Application                     # python-telegram-bot 应用
-    _bot: Bot                             # Telegram Bot 实例
-    _last_messages: dict[str, int]        # 频道 ID -> 最后消息 ID 缓存
-```
-
-## 用户权限
-
-### _is_allowed_user(user_id)
-
-检查 Telegram 用户是否被允许使用 Bot。
-
-- 如果 `allowed_users` 列表为空，允许所有用户
-- 否则只允许列表中的用户 ID
-
-```python
-def _is_allowed_user(self, user_id: int) -> bool:
-    if not self.telegram_config.allowed_users:
-        return True  # 无限制
-    return user_id in self.telegram_config.allowed_users
+    telegram_config: TelegramConfig
+    _app: Application               # python-telegram-bot 应用
+    _bot: Bot                        # Telegram Bot API 客户端
+    _last_messages: dict[str, int]   # channel_id -> 最后消息 ID
 ```
 
 ## 频道 ID 格式
 
-Telegram 使用 `telegram:{chat_id}` 格式的内部 ID，例如 `telegram:123456789`。
+Telegram 频道在内部使用 `telegram:{chat_id}` 格式（如 `telegram:123456789`），以便在共享的 SessionRouter 中与 Discord 频道区分。
 
-```python
-def _channel_id(self, chat_id: int) -> str:
-    return f"telegram:{chat_id}"
+## 访问控制
 
-def _chat_id_from_channel(self, channel_id: str) -> int:
-    return int(channel_id.split(":")[1])
-```
+### `_is_allowed_user(user_id: int) -> bool`
 
-## 消息处理器
+检查 Telegram 用户是否有权限与机器人交互。如果 `allowed_users` 为空（未配置），则允许所有用户；否则只接受列表中的用户 ID。
+
+## 处理器
 
 ### 命令处理器
 
-注册以下命令的处理器：
+所有已识别的命令都通过 `CommandHandler` 注册：
 
 ```python
-command_names = [
-    "start", "resume", "ls", "list", "exit", "rm", "remove",
-    "destroy", "mode", "status", "health", "monitor", "help"
-]
+command_names = ["start", "resume", "ls", "list", "exit", "rm", "remove",
+                 "destroy", "mode", "status", "health", "monitor", "help"]
 ```
 
-每个命令都使用 `CommandHandler` 注册，并路由到 `_handle_telegram_command()`。
-
-由于 python-telegram-bot 的 `CommandHandler` 在某些情况下可能去除命令前缀，处理函数会确保消息以 `/` 开头后再传递给 `handle_input()`。
+`_handle_telegram_command()` 方法：
+1. 验证消息和用户
+2. 检查用户权限
+3. 确保文本以 `/` 开头（如果 Telegram 去除了前缀则重新添加）
+4. 转发到来自 BotBase 的 `handle_input()`
 
 ### 消息处理器
 
-非命令的文本消息通过 `MessageHandler` 处理：
+非命令文本消息通过带有过滤器 `filters.TEXT & ~filters.COMMAND` 的 `MessageHandler` 处理。`_handle_telegram_message()` 方法将这些消息直接转发到 `handle_input()`。
 
-```python
-self._app.add_handler(MessageHandler(
-    filters.TEXT & ~filters.COMMAND,
-    self._handle_telegram_message,
-))
-```
+## 平台方法
 
-所有非命令消息都转发到 `handle_input()`，进而由基类的 `_forward_message()` 转发给 Claude。
+### `send_message(channel_id, text) -> Message`
 
-## 消息发送
+向 Telegram 聊天发送消息。处理以下情况：
 
-### send_message(channel_id, text) -> Message
+1. **消息拆分**：使用 `split_message()`，`max_len=4096`（Telegram 的限制）
+2. **Markdown 格式化**：先尝试使用 `ParseMode.MARKDOWN` 发送
+3. **回退**：如果 Markdown 解析失败，改为不带格式发送
+4. 返回最后发送的消息对象
+5. 在 `_last_messages` 中缓存消息 ID，以备后续编辑使用
 
-发送消息到 Telegram 聊天。
+### `edit_message(channel_id, message_obj, text) -> None`
 
-**特点**：
-- Telegram 单条消息限制 **4096 字符**（比 Discord 的 2000 多一倍）
-- 使用 `split_message(text, max_len=4096)` 分割长消息
-- 首先尝试使用 Markdown 格式发送（`ParseMode.MARKDOWN`）
-- 如果 Markdown 解析失败，自动降级为纯文本发送
-- 缓存最后一条消息的 `message_id`
+编辑已有的 Telegram 消息。处理以下情况：
 
-```python
-try:
-    last_msg = await self._bot.send_message(
-        chat_id=chat_id,
-        text=chunk,
-        parse_mode=ParseMode.MARKDOWN,
-    )
-except Exception:
-    # 降级：无格式发送
-    last_msg = await self._bot.send_message(
-        chat_id=chat_id,
-        text=chunk,
-    )
-```
+1. 从消息对象中提取 `message_id`
+2. 如有必要截断至 4096 字符
+3. 尝试使用 Markdown 格式编辑
+4. 如果 Markdown 失败则回退为纯文本
 
-### edit_message(channel_id, message_obj, text)
+## 生命周期
 
-编辑已有消息。
+### `start() -> None`
 
-**特点**：
-- 超过 4096 字符的内容会被截断
-- 同样使用 Markdown 优先，失败后降级为纯文本
-- 从 `message_obj` 的 `message_id` 属性获取消息 ID
+1. 使用配置的 token 构建 `Application`
+2. 注册所有命令处理器
+3. 注册非命令文本的消息处理器
+4. 初始化应用
+5. 开始轮询更新
 
-## 启动和停止
+### `stop() -> None`
 
-### start()
+1. 停止更新器（轮询）
+2. 停止应用
+3. 关闭应用
 
-启动 Telegram Bot。使用轮询（polling）模式接收消息。
+## 与 Discord Bot 的差异
 
-```python
-async def start(self):
-    self._app = Application.builder().token(token).build()
-    self._bot = self._app.bot
-
-    # 注册处理器...
-
-    await self._app.initialize()
-    await self._app.start()
-    await self._app.updater.start_polling()
-```
-
-启动后 Bot 开始轮询 Telegram 服务器获取更新。主事件循环由 `main.py` 管理。
-
-### stop()
-
-停止 Telegram Bot。
-
-```python
-async def stop(self):
-    if self._app.updater:
-        await self._app.updater.stop()
-    await self._app.stop()
-    await self._app.shutdown()
-```
-
-按顺序：停止轮询器 → 停止应用 → 清理资源。
-
-## 与 Discord Bot 的区别
-
-| 特性 | Discord Bot | Telegram Bot |
-|------|------------|--------------|
-| 命令方式 | 斜杠命令 (app_commands) | CommandHandler |
-| 自动补全 | 有（机器名、路径） | 无 |
+| 功能 | Discord | Telegram |
+|---|---|---|
 | 消息长度限制 | 2000 字符 | 4096 字符 |
-| 格式化 | Discord Markdown | Telegram Markdown |
-| 打字指示器 | 有（typing loop） | 无 |
-| 心跳更新 | 有（每 25 秒） | 无 |
-| 延迟响应 | 有（defer） | 无 |
-| 权限控制 | 频道 ID 列表 | 用户 ID 列表 |
-| 消息接收 | WebSocket | 轮询 (polling) |
+| 命令系统 | 斜杠命令（app_commands） | CommandHandler（文本方式） |
+| 自动补全 | 内置选择/自动补全 | 不可用 |
+| 打字指示器 | 自定义打字循环 | 未实现 |
+| 心跳更新 | 自定义心跳消息 | 未实现（使用 BotBase 的流式处理） |
+| 访问控制 | 基于频道的白名单 | 基于用户 ID 的白名单 |
+| 格式化 | Discord Markdown | Telegram Markdown（ParseMode.MARKDOWN） |
+| 命令注册 | 同步到 Discord API | 通过处理器进行文本匹配 |
 
 ## 与其他模块的关系
 
-- **bot_base.py** — 继承所有命令处理逻辑和消息转发
-- **message_formatter.py** — 使用 `split_message(text, max_len=4096)`
-- **config.py** — 使用 `TelegramConfig`
+- 继承 **BotBase** 的命令处理和消息转发逻辑
+- **main.py** 创建并启动 TelegramBot
+- 使用 **message_formatter** 的 `split_message()`（4096 字符限制）

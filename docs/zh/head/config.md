@@ -1,35 +1,35 @@
-# 配置加载 (config.py)
+# 配置加载器（config.py）
 
-`config.py` 负责定义配置数据结构、加载 YAML 配置文件以及展开环境变量。
+**文件：** `head/config.py`
 
-**源文件**：`head/config.py`
+负责加载、解析和验证 `config.yaml` 配置文件。定义所有配置数据类并提供环境变量展开功能。
 
-## 职责
+## 用途
 
-1. 定义所有配置相关的数据类（dataclass）
-2. 加载和解析 `config.yaml` 文件
-3. 递归展开配置值中的 `${ENV_VAR}` 引用
-4. 展开路径中的 `~` 为用户主目录
+- 使用 Python 数据类定义有类型的配置结构
+- 加载并解析 YAML 配置文件
+- 展开字符串值中的 `${ENV_VAR}` 引用
+- 展开文件路径中的 `~`
 
 ## 数据类
 
 ### MachineConfig
 
-表示一台远程机器的配置。
+表示单台远程机器。
 
 ```python
 @dataclass
 class MachineConfig:
-    id: str                              # 机器唯一标识
+    id: str                              # 机器标识符（来自 YAML 的键）
     host: str                            # 主机名或 IP
     user: str                            # SSH 用户名
     ssh_key: Optional[str] = None        # SSH 私钥路径
     port: int = 22                       # SSH 端口
-    proxy_jump: Optional[str] = None     # 跳板机 ID
-    proxy_command: Optional[str] = None  # SSH ProxyCommand
-    password: Optional[str] = None       # SSH 密码（支持 file: 前缀）
-    daemon_port: int = 9100              # Daemon RPC 端口
-    node_path: Optional[str] = None      # Node.js 路径
+    proxy_jump: Optional[str] = None     # 跳板机的机器 ID
+    proxy_command: Optional[str] = None  # SSH ProxyCommand 字符串
+    password: Optional[str] = None       # 密码或 "file:/path"
+    daemon_port: int = 9100              # 远程守护进程端口
+    node_path: Optional[str] = None      # 远程 Node.js 路径
     default_paths: list[str] = []        # 常用项目路径
 ```
 
@@ -38,9 +38,9 @@ class MachineConfig:
 ```python
 @dataclass
 class DiscordConfig:
-    token: str                                   # Bot Token
-    allowed_channels: list[int] = []             # 允许的频道 ID
-    command_prefix: str = "/"                    # 命令前缀
+    token: str                           # 机器人 token
+    allowed_channels: list[int] = []     # 频道 ID 白名单（为空 = 所有）
+    command_prefix: str = "/"            # 命令前缀
 ```
 
 ### TelegramConfig
@@ -48,8 +48,8 @@ class DiscordConfig:
 ```python
 @dataclass
 class TelegramConfig:
-    token: str                              # Bot Token
-    allowed_users: list[int] = []           # 允许的用户 ID
+    token: str                           # 机器人 token
+    allowed_users: list[int] = []        # 用户 ID 白名单（为空 = 所有）
 ```
 
 ### BotConfig
@@ -66,8 +66,8 @@ class BotConfig:
 ```python
 @dataclass
 class SkillsConfig:
-    shared_dir: str = "./skills"      # 本地技能目录
-    sync_on_start: bool = True        # 启动时是否同步
+    shared_dir: str = "./skills"         # 本地技能目录
+    sync_on_start: bool = True           # 会话创建时同步
 ```
 
 ### DaemonDeployConfig
@@ -75,14 +75,14 @@ class SkillsConfig:
 ```python
 @dataclass
 class DaemonDeployConfig:
-    install_dir: str = "~/.codecast/daemon"   # 远程安装目录
-    auto_deploy: bool = True                       # 自动部署
+    install_dir: str = "~/.codecast/daemon"   # 远程安装路径
+    auto_deploy: bool = True                        # 自动部署守护进程
     log_file: str = "~/.codecast/daemon.log"  # 远程日志文件
 ```
 
 ### Config
 
-顶层配置对象，包含所有子配置。
+顶层配置容器：
 
 ```python
 @dataclass
@@ -96,63 +96,46 @@ class Config:
 
 ## 关键函数
 
-### expand_env_vars(value: str) -> str
+### `load_config(config_path: str) -> Config`
 
-展开字符串中的 `${ENV_VAR}` 引用。使用正则表达式 `\$\{(\w+)\}` 匹配环境变量名，并从 `os.environ` 中查找替换值。
+配置加载的主入口。
 
-如果环境变量未定义，保持原始的 `${VAR}` 文本不变。
+1. 读取 YAML 文件
+2. 通过 `_process_value()` 递归展开 `${ENV_VAR}` 引用
+3. 将 `machines` 部分解析为 `MachineConfig` 对象（使用 YAML 键作为机器的 `id`）
+4. 解析 `bot.discord` 和 `bot.telegram` 部分
+5. 解析 `default_mode`、`skills` 和 `daemon` 部分
+
+抛出：
+- 如果配置文件不存在，抛出 `FileNotFoundError`
+- 如果配置文件为空，抛出 `ValueError`
+
+### `expand_env_vars(value: str) -> str`
+
+将 `${VARIABLE_NAME}` 模式替换为对应的环境变量值。如果变量未设置，原始的 `${...}` 表达式保持不变。
 
 ```python
-# 示例
-expand_env_vars("token-${DISCORD_TOKEN}-end")
-# 如果 DISCORD_TOKEN=abc123，结果为 "token-abc123-end"
-# 如果未定义，结果为 "token-${DISCORD_TOKEN}-end"
+# 示例：
+expand_env_vars("token: ${DISCORD_TOKEN}")
+# → "token: my-actual-token"（如果 DISCORD_TOKEN 已设置）
+# → "token: ${DISCORD_TOKEN}"（如果 DISCORD_TOKEN 未设置）
 ```
 
-### expand_path(path: str) -> str
+### `expand_path(path: str) -> str`
 
-组合 `expand_env_vars` 和 `Path.expanduser()` 来完整展开路径：
+将环境变量展开与 `~`（主目录）展开结合。用于 `ssh_key` 等文件路径。
 
 ```python
-expand_path("~/.ssh/${KEY_NAME}")
-# → "/home/user/.ssh/my_key"
+expand_path("~/.ssh/id_rsa")
+# → "/home/user/.ssh/id_rsa"
 ```
 
-### _process_value(value: Any) -> Any
+### `_process_value(value: Any) -> Any`
 
-递归处理配置值。对字符串调用 `expand_env_vars`，对字典和列表递归处理内部元素，其他类型原样返回。
-
-### load_config(config_path: str) -> Config
-
-主加载函数。流程：
-
-1. 检查文件是否存在，不存在抛出 `FileNotFoundError`
-2. 使用 `yaml.safe_load()` 解析 YAML
-3. 使用 `_process_value()` 递归展开所有环境变量
-4. 手动解析每个配置段（machines、bot、skills、daemon）
-5. 返回填充完整的 `Config` 对象
-
-#### 解析细节
-
-**machines 解析**：
-- 每台机器的 ID 就是 YAML 中的键名
-- `host` 默认为机器 ID
-- `user` 默认为当前系统用户 (`os.environ.get("USER", "root")`)
-- `ssh_key` 路径会通过 `expand_path()` 展开
-- `allowed_channels` 和 `allowed_users` 中的值会被转换为 `int` 类型
-
-**bot 解析**：
-- 只在存在对应的配置段且 token 不为空时才创建 Bot 配置
-
-**default_mode**：
-- 默认为 `"auto"`
+递归处理配置字典中的所有值，对字符串展开环境变量，对字典和列表递归处理。非字符串、非容器类型的值原样返回。
 
 ## 与其他模块的关系
 
-`config.py` 是基础模块，被几乎所有其他模块依赖：
-
-- `main.py` — 调用 `load_config()` 加载配置
-- `ssh_manager.py` — 使用 `Config` 和 `MachineConfig` 管理连接
-- `bot_discord.py` — 使用 `DiscordConfig` 配置 Bot
-- `bot_telegram.py` — 使用 `TelegramConfig` 配置 Bot
-- `bot_base.py` — 使用 `Config` 读取 `default_mode` 等全局设置
+- **main.py** 在启动时调用 `load_config()`
+- **SSHManager** 接收完整的 `Config` 对象，读取 `MachineConfig` 实例用于 SSH 连接，读取 `DaemonDeployConfig` 用于部署设置
+- **各机器人类** 接收 `Config` 以访问机器人 token 和相关设置

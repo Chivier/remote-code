@@ -1,25 +1,29 @@
 # Bot Command Reference
 
-This page documents all commands available in the Discord and Telegram bots.
+This page documents all commands available across the Discord, Telegram, and Lark bots.
 
 ## Command Summary
 
 | Command | Arguments | Description |
 |---|---|---|
-| `/start` | `<machine> <path>` | Start a new Claude session |
-| `/resume` | `<session_id>` | Resume a previously detached session |
-| `/new` | *(none)* | Start a new session in same directory (detaches current) |
+| `/start` | `<machine> <path> [--cli <type>]` | Start a new AI session |
+| `/resume` | `<session_name_or_id>` | Resume a previously detached session |
+| `/new` | *(none)* | Start a new session in the same directory |
 | `/clear` | *(none)* | Destroy current session and restart in same directory |
-| `/ls` | `machine` or `session [machine]` | List machines or sessions |
 | `/exit` | *(none)* | Detach from current session |
-| `/rm` | `<machine> <path>` | Destroy a session |
+| `/stop` | *(none)* | Interrupt the AI's current operation |
+| `/interrupt` | *(none)* | Interrupt the AI's current operation (alias for /stop) |
+| `/ls` | `machine` or `session [machine]` | List machines or sessions |
+| `/rm-session` | `<name_or_id>` | Destroy a specific session by name or ID |
+| `/rm` | `<machine> <path>` | Destroy all sessions on a machine/path |
 | `/mode` | `<auto\|code\|plan\|ask>` | Switch permission mode |
-| `/rename` | `<new_name>` | Rename current session (word-word format) |
+| `/model` | `<model_name>` | Switch the AI model for the current session |
+| `/tool-display` | `<timer\|append\|batch>` | Switch how tool calls are displayed |
+| `/rename` | `<new_name>` | Rename the current session |
 | `/status` | *(none)* | Show current session info |
-| `/interrupt` | *(none)* | Interrupt Claude's current operation |
 | `/health` | `[machine]` | Check daemon health |
-| `/monitor` | `[machine]` | Monitor session details & queues |
-| `/add-machine` | `<name> [host] [user] [opts]` | Add a remote machine |
+| `/monitor` | `[machine]` | Monitor session details and queues |
+| `/add-machine` | `<name> [host] [user]` | Add a remote machine |
 | `/remove-machine` | `<machine>` | Remove a machine |
 | `/update` | *(none)* | Git pull + restart (admin only) |
 | `/restart` | *(none)* | Restart head node (admin only) |
@@ -29,37 +33,44 @@ This page documents all commands available in the Discord and Telegram bots.
 
 ## `/start`
 
-Start a new Claude session on a remote machine.
+Start a new AI session on a remote machine.
 
 **Usage:**
 
 ```
-/start <machine_id> <path>
+/start <machine_id> <path> [--cli <type>]
 ```
 
 **Arguments:**
 
 | Argument | Description |
 |---|---|
-| `machine_id` | ID of the remote machine (as defined in config.yaml) |
+| `machine_id` | ID of the remote machine as defined in config.yaml |
 | `path` | Absolute path to the project directory on the remote machine |
+| `--cli <type>` | AI CLI to use: `claude`, `codex`, `gemini`, or `opencode` (default: `claude`) |
 
-**Example:**
+**Shorthand flags:** `--codex`, `--gemini`, `--opencode` can be used instead of `--cli <type>`.
+
+**Examples:**
 
 ```
 /start gpu-1 /home/user/my-project
+/start gpu-1 /home/user/my-project --cli codex
+/start gpu-1 /home/user/my-project --gemini
 ```
 
 **What happens:**
 
-1. An SSH tunnel is established to the machine (if not already active)
-2. The daemon is deployed and started if needed (auto-deploy)
-3. Skills files are synced to the project directory (if configured)
-4. A new Claude session is created on the daemon
-5. The session is registered in the local database
-6. Confirmation message shows session ID and current mode
+1. An SSH tunnel is established to the machine (if not already active).
+2. The daemon is deployed and started if not already running.
+3. Skills files are synced to the project directory if configured.
+4. A new AI session is created on the daemon.
+5. The session is registered in the local database.
+6. A confirmation message shows the session name and current mode.
 
-**Discord features:** Slash command with autocomplete for both `machine` (from configured machines) and `path` (from `default_paths` in config).
+Session names are auto-assigned in adjective-noun format, for example `bright-falcon` or `smooth-dove`. You can rename a session with `/rename`.
+
+**Discord:** Slash command with autocomplete for `machine` (from configured machines) and `path` (from `default_paths` in config).
 
 ---
 
@@ -70,34 +81,35 @@ Resume a previously detached session.
 **Usage:**
 
 ```
-/resume <session_id>
+/resume <session_name_or_id>
 ```
 
 **Arguments:**
 
 | Argument | Description |
 |---|---|
-| `session_id` | The daemon session UUID (shown when session was created or listed) |
+| `session_name_or_id` | Session name (e.g. `bright-falcon`) or daemon UUID |
 
-**Example:**
+**Examples:**
 
 ```
+/resume bright-falcon
 /resume a1b2c3d4-e5f6-7890-abcd-ef1234567890
 ```
 
 **What happens:**
 
-1. The session is looked up in the local database (both active and logged sessions)
-2. An SSH tunnel is established to the session's machine
-3. The daemon is notified to resume the session with the stored SDK session ID
-4. The session is re-registered as active on the current channel
-5. Future messages use `--resume` to continue the conversation context
+1. The session is looked up in the local database by name or ID.
+2. An SSH tunnel is established to the session's machine.
+3. The daemon is notified to resume the session.
+4. The session is re-registered as active on the current channel.
+5. Future messages continue the conversation context.
 
 ---
 
 ## `/new`
 
-Start a new Claude session in the same directory as the current session, automatically detaching the current one.
+Start a new AI session in the same directory as the current session, automatically detaching the current one.
 
 **Usage:**
 
@@ -105,13 +117,7 @@ Start a new Claude session in the same directory as the current session, automat
 /new
 ```
 
-**What happens:**
-
-1. The current session is detached (not destroyed)
-2. A new Claude session is created on the same machine and path
-3. The new session is bound to the current channel
-
-Equivalent to `/exit` followed by `/start` with the same machine and path. Useful for getting a clean context without re-entering the connection details.
+Equivalent to `/exit` followed by `/start` with the same machine, path, and CLI type. Useful for getting a clean context without re-entering connection details.
 
 ---
 
@@ -125,14 +131,52 @@ Destroy the current session and immediately start a fresh one in the same direct
 /clear
 ```
 
-**What happens:**
-
-1. The current session's Claude process is killed
-2. The session record is marked destroyed
-3. A new Claude session is spawned in the same machine and path
-4. The new session is bound to the current channel
-
 Unlike `/new`, the old session is fully destroyed rather than detached.
+
+---
+
+## `/exit`
+
+Detach from the current session without destroying it.
+
+**Usage:**
+
+```
+/exit
+```
+
+The AI process on the remote machine keeps running. Use `/resume` with the session name to reconnect later.
+
+**Example output:**
+
+```
+Detached from session on gpu-1:/home/user/project
+Use /resume bright-falcon to reconnect.
+```
+
+---
+
+## `/stop` and `/interrupt`
+
+Interrupt the AI's current operation.
+
+**Usage:**
+
+```
+/stop
+/interrupt
+```
+
+Both commands are equivalent. They:
+
+1. Send an interrupt signal to the running AI process.
+2. Clear the message queue.
+3. Leave the session active for future messages.
+
+**Output:**
+
+- If the AI was processing: "Interrupted current operation."
+- If the AI was idle: "No active operation to interrupt."
 
 ---
 
@@ -147,13 +191,6 @@ List machines or sessions.
 /ls session [machine_id]
 ```
 
-**Subcommands:**
-
-| Subcommand | Description |
-|---|---|
-| `machine` / `machines` | List all configured machines with online/daemon status |
-| `session` / `sessions` | List all sessions, optionally filtered by machine |
-
 **Examples:**
 
 ```
@@ -166,55 +203,45 @@ List machines or sessions.
 
 ```
 Machines:
-🟢 gpu-1 (gpu1.example.com) ⚡
-  Paths: /home/user/project-a, /home/user/project-b
-🔴 gpu-2 (gpu2.lab.internal) 💤
+  gpu-1 (gpu1.example.com) [online, daemon running]
+    Paths: /home/user/project-a, /home/user/project-b
+  gpu-2 (gpu2.lab.internal) [offline]
 ```
-
-- 🟢 = online, 🔴 = offline
-- ⚡ = daemon running, 💤 = daemon stopped
 
 **Session listing output:**
 
 ```
 Sessions:
-● a1b2c3d4... gpu-1:/home/user/project [bypass] (active)
-○ e5f6g7h8... gpu-1:/home/user/other [code] (detached)
+  bright-falcon  gpu-1:/home/user/project  [bypass] active
+  smooth-dove    gpu-1:/home/user/other    [code]   detached
 ```
-
-**Discord features:** Dropdown choice for `machine`/`session` target, with autocomplete on the optional machine filter.
 
 ---
 
-## `/exit`
+## `/rm-session`
 
-Detach from the current session without destroying it.
+Destroy a specific session by name or ID.
 
 **Usage:**
 
 ```
-/exit
+/rm-session <name_or_id>
 ```
 
-**What happens:**
-
-1. The active session on the current channel is detached
-2. The session is logged in the history table for future resume
-3. The daemon session is NOT destroyed -- Claude processes can continue
-4. A message shows the session ID for later `/resume`
-
-**Example output:**
+**Examples:**
 
 ```
-Detached from session on gpu-1:/home/user/project
-Use /resume a1b2c3d4-e5f6-7890-abcd-ef1234567890 to reconnect.
+/rm-session bright-falcon
+/rm-session a1b2c3d4-e5f6-7890-abcd-ef1234567890
 ```
+
+This kills the AI process for that session and marks it as destroyed in the database.
 
 ---
 
 ## `/rm`
 
-Destroy a session by machine and path.
+Destroy all sessions matching a machine and path.
 
 **Usage:**
 
@@ -222,28 +249,13 @@ Destroy a session by machine and path.
 /rm <machine_id> <path>
 ```
 
-**Arguments:**
-
-| Argument | Description |
-|---|---|
-| `machine_id` | Machine the session runs on |
-| `path` | Project path of the session |
-
 **Example:**
 
 ```
 /rm gpu-1 /home/user/project
 ```
 
-**What happens:**
-
-1. All sessions matching the machine/path combination are found
-2. For each active or detached session:
-   - The daemon session is destroyed (Claude process killed)
-   - The local session record is marked as destroyed
-3. Confirmation shows the number of sessions destroyed
-
-**Discord features:** Autocomplete for `machine`.
+All active and detached sessions on the given machine/path combination are destroyed.
 
 ---
 
@@ -257,16 +269,12 @@ Switch the permission mode for the current session.
 /mode <auto|code|plan|ask>
 ```
 
-**Arguments:**
-
-| Mode | Display Name | CLI Flag | Description |
-|---|---|---|---|
-| `auto` | bypass | `--dangerously-skip-permissions` | Full automation. Claude can read, write, and execute anything without asking for permission. |
-| `code` | code | *(none)* | Auto-accept file edits. Claude asks before running bash commands. |
-| `plan` | plan | *(none)* | Read-only analysis. Claude can read files but cannot make changes. |
-| `ask` | ask | *(none)* | Confirm everything. Every tool invocation requires approval. |
-
-The display name `bypass` is used for `auto` mode in bot output to make the behavior explicit.
+| Mode | Description |
+|---|---|
+| `auto` | Full automation. The AI can read, write, and execute anything without asking. Displayed as "bypass" in bot output. |
+| `code` | Auto-accept file edits. The AI asks before running shell commands. |
+| `plan` | Read-only analysis. The AI can read files but cannot make changes. |
+| `ask` | Confirm everything. Every tool invocation requires approval. |
 
 **Example:**
 
@@ -274,11 +282,52 @@ The display name `bypass` is used for `auto` mode in bot output to make the beha
 /mode plan
 ```
 
-**Discord features:** Dropdown choice with mode descriptions:
-- "bypass - Full auto (skip all permissions)"
-- "code - Auto accept edits, confirm bash"
-- "plan - Read-only analysis"
-- "ask - Confirm everything"
+**Discord:** Dropdown choice with descriptions for each mode.
+
+---
+
+## `/model`
+
+Switch the AI model for the current session.
+
+**Usage:**
+
+```
+/model <model_name>
+```
+
+**Examples:**
+
+```
+/model claude-sonnet-4-20250514
+/model claude-opus-4-20250514
+```
+
+The model change takes effect for the next message sent to the session. Use `/status` to confirm the active model.
+
+---
+
+## `/tool-display`
+
+Switch how tool calls (file reads, shell commands, etc.) are displayed while the AI is working.
+
+**Usage:**
+
+```
+/tool-display <timer|append|batch>
+```
+
+| Mode | Description |
+|---|---|
+| `timer` | Shows a "Working Xs" timer while the AI works. All results are sent together at the end. This is the default. |
+| `append` | Shows each tool call progressively as it happens. |
+| `batch` | Accumulates all tool calls and sends a single summary at the end. |
+
+**Example:**
+
+```
+/tool-display timer
+```
 
 ---
 
@@ -304,7 +353,7 @@ Rename the current session.
 /rename fast-hawk
 ```
 
-The new name is stored in the session registry and can be used with `/resume` instead of the UUID.
+The new name is stored in the session registry and can be used with `/resume`.
 
 ---
 
@@ -321,39 +370,16 @@ Show the current session's status and queue statistics.
 **Example output:**
 
 ```
-Session Status
+Session: bright-falcon
 Machine: gpu-1
 Path: /home/user/project
 Mode: bypass
 Status: active
-Session ID: a1b2c3d4e5f6...
-SDK Session: x9y8z7w6v5u4...
+CLI: claude
+Model: claude-sonnet-4-20250514
 Queue: 0 pending messages
 Buffered: 0 responses
 ```
-
----
-
-## `/interrupt`
-
-Interrupt Claude's current operation.
-
-**Usage:**
-
-```
-/interrupt
-```
-
-**What happens:**
-
-1. Sends SIGTERM to the running Claude CLI process
-2. Clears the message queue
-3. The session remains active for future messages
-
-**Output:**
-
-- If Claude was processing: "Interrupted Claude's current operation."
-- If Claude was idle: "Claude is not currently processing any request."
 
 ---
 
@@ -367,24 +393,16 @@ Check daemon health on a remote machine.
 /health [machine_id]
 ```
 
-**Arguments:**
-
-| Argument | Required | Description |
-|---|---|---|
-| `machine_id` | no | Machine to check. Defaults to current session's machine, or checks all connected machines. |
+If no machine is specified, checks the machine of the current session, or checks all connected machines.
 
 **Example output:**
 
 ```
 Daemon Health - gpu-1
 Status: OK
-Uptime: 2h15m30s
+Uptime: 2h 15m 30s
 Sessions: 3 (idle: 2, busy: 1)
-Memory: 45MB RSS, 20/30MB heap
-Node: v20.11.0 (PID: 12345)
 ```
-
-**Discord features:** Autocomplete for `machine`.
 
 ---
 
@@ -398,27 +416,19 @@ Monitor session details and queue state on a remote machine.
 /monitor [machine_id]
 ```
 
-**Arguments:**
-
-| Argument | Required | Description |
-|---|---|---|
-| `machine_id` | no | Machine to monitor. Defaults to current session's machine, or monitors all connected machines. |
-
 **Example output:**
 
 ```
-Monitor - gpu-1 (uptime: 2h15m30s, 2 session(s))
+Monitor - gpu-1 (uptime: 2h 15m 30s, 2 session(s))
 
-● a1b2c3d4... idle [bypass | claude-sonnet-4-20250514]
-  Path: /home/user/project
-  Client: connected | Queue: 0 pending, 0 buffered
+  bright-falcon  idle [bypass | claude-sonnet-4-20250514]
+    Path: /home/user/project
+    Client: connected | Queue: 0 pending, 0 buffered
 
-◉ e5f6g7h8... busy [code | claude-sonnet-4-20250514]
-  Path: /home/user/other
-  Client: disconnected | Queue: 1 pending, 5 buffered
+  smooth-dove  busy [code | claude-sonnet-4-20250514]
+    Path: /home/user/other
+    Client: disconnected | Queue: 1 pending, 5 buffered
 ```
-
-**Discord features:** Autocomplete for `machine`.
 
 ---
 
@@ -429,19 +439,9 @@ Add a new remote machine to the configuration.
 **Usage:**
 
 ```
-/add-machine <name> [host] [user] [opts]
+/add-machine <name> [host] [user]
 /add-machine --from-ssh
 ```
-
-**Arguments:**
-
-| Argument | Required | Description |
-|---|---|---|
-| `name` | yes | Short identifier for the machine (used in other commands) |
-| `host` | no | IP address or hostname (can be resolved from SSH config) |
-| `user` | no | SSH username (can be resolved from SSH config) |
-| `opts` | no | Additional SSH options (port, proxy jump, etc.) |
-| `--from-ssh` | — | Browse and import from `~/.ssh/config` interactively |
 
 **Examples:**
 
@@ -450,7 +450,7 @@ Add a new remote machine to the configuration.
 /add-machine gpu-3 --from-ssh
 ```
 
-The machine is persisted to `config.yaml` immediately. The daemon is deployed on first `/start`.
+The `--from-ssh` option reads `~/.ssh/config` and presents an interactive selection of hosts to import. The machine is persisted to `config.yaml` immediately. The daemon is deployed on first `/start`.
 
 ---
 
@@ -464,25 +464,13 @@ Remove a machine from the configuration.
 /remove-machine <machine_id>
 ```
 
-**Arguments:**
-
-| Argument | Description |
-|---|---|
-| `machine_id` | The machine to remove |
-
-**Example:**
-
-```
-/remove-machine gpu-3
-```
-
-If active or detached sessions exist on the machine, the command asks for confirmation. The machine entry is deleted from `config.yaml`.
+If active or detached sessions exist on the machine, you are asked to confirm. The machine entry is deleted from `config.yaml`.
 
 ---
 
 ## `/update`
 
-Pull the latest code and restart the Head Node. **Admin only.**
+Pull the latest code and restart the Head Node. Admin only.
 
 **Usage:**
 
@@ -490,19 +478,13 @@ Pull the latest code and restart the Head Node. **Admin only.**
 /update
 ```
 
-**What happens:**
-
-1. Runs `git pull --ff-only` in the project directory
-2. Replaces the running process via `os.execv()` (same PID)
-3. Sends a confirmation message after the restart completes
-
-Requires your user ID to be in `admin_users` in the config.
+Runs `git pull` in the project directory, then replaces the running process. Requires your user ID in `admin_users` in the config.
 
 ---
 
 ## `/restart`
 
-Restart the Head Node without pulling new code. **Admin only.**
+Restart the Head Node without pulling new code. Admin only.
 
 **Usage:**
 
@@ -510,7 +492,7 @@ Restart the Head Node without pulling new code. **Admin only.**
 /restart
 ```
 
-Replaces the running process via `os.execv()`. Useful for picking up config changes or recovering from a degraded state. Requires your user ID to be in `admin_users` in the config.
+Useful for picking up config changes or recovering from a degraded state. Requires your user ID in `admin_users` in the config.
 
 ---
 
@@ -528,20 +510,35 @@ Show the list of available commands.
 
 ## Sending Messages
 
-After starting or resuming a session, any non-command message sent in the channel is forwarded to Claude. The response is streamed back in real-time.
+After starting or resuming a session, any message sent in the channel that is not a recognized command is forwarded to the AI. If you type something that starts with `/` but is not a known bot command, it is also forwarded to the AI directly -- useful for passing slash commands to the AI CLI itself.
 
-While Claude is processing, a cursor indicator (`▌`) is shown at the end of the streaming text. On Discord, a "bot is typing..." indicator and periodic heartbeat status messages keep you informed of progress during long operations.
+Responses stream back in real-time. While the AI is processing, a cursor indicator or timer shows progress. On Discord, a "bot is typing..." indicator and periodic status updates keep you informed during long operations.
 
-If you send a message while Claude is still processing the previous one, the new message is queued and processed automatically after the current one completes. You'll see a notification with your position in the queue.
+If you send a message while the AI is still processing the previous one, the new message is queued and processed automatically in order.
+
+## Interactive Questions (AskUserQuestion)
+
+When the AI uses the `AskUserQuestion` tool, Codecast presents the question with interactive controls rather than as plain text:
+
+- **Discord** -- Buttons below the message. Click to select.
+- **Telegram** -- An inline keyboard. Tap to select.
+- **Lark** -- An interactive card. Tap to select.
+
+For multiple-choice questions, each option appears as a separate button or key. Your selection is sent back to the AI as the response.
+
+## File Forwarding
+
+When the AI response contains a file path that matches a configured forwarding rule, Codecast can automatically download the file from the remote machine and send it to your chat. This happens without any manual command.
+
+File forwarding is configured in `config.yaml` under `file_forward`. See the [Configuration Guide](./configuration.md) for setup details.
 
 ## Platform Differences
 
-| Feature | Discord | Telegram |
-|---|---|---|
-| Command style | Slash commands with popups | Text commands (e.g., `/start gpu-1 /path`) |
-| Autocomplete | Machine IDs, paths, mode choices | Not available |
-| Message limit | 2000 characters | 4096 characters |
-| Typing indicator | "Bot is typing..." loop | Not implemented |
-| Heartbeat updates | Status messages every 25s | Not implemented |
-| Access control | Channel whitelist | User ID whitelist |
-| Command aliases | Not applicable (registered commands) | `/list`, `/remove`, `/destroy` also work |
+| Feature | Discord | Telegram | Lark |
+|---|---|---|---|
+| Command style | Slash commands with popups | Text commands | Text commands |
+| Autocomplete | Machine IDs, paths, modes | Not available | Not available |
+| Message limit | 2000 characters | 4096 characters | Platform limit |
+| Interactive questions | Buttons | Inline keyboard | Interactive cards |
+| Access control | Channel whitelist | User ID or chat whitelist | Chat ID whitelist |
+| Admin commands | User ID in `admin_users` | User ID in `admin_users` | User ID in `admin_users` |

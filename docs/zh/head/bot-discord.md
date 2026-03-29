@@ -1,189 +1,155 @@
-# Discord Bot (bot_discord.py)
+# Discord Bot（bot_discord.py）
 
-`bot_discord.py` 实现了 Discord 平台的 Bot，使用 discord.py v2 的斜杠命令、自动补全和心跳状态更新。
+**文件：** `head/bot_discord.py`
 
-**源文件**：`head/bot_discord.py`
+使用 discord.py v2 实现的 Discord 机器人，支持斜杠命令、自动补全、打字指示器和心跳状态更新。
 
-## 职责
+## 用途
 
-1. 实现 Discord 平台特定的消息发送和编辑
-2. 注册所有斜杠命令（app_commands）及其自动补全
-3. 管理打字指示器（typing indicator）
-4. 实现心跳状态更新机制（避免 Discord 超时）
-5. 处理延迟交互（deferred interaction）
+- 实现 Codecast 的 Discord 平台层
+- 向 Discord 应用命令系统注册斜杠命令
+- 为机器 ID 和项目路径提供自动补全
+- 在 Claude 处理期间显示打字指示器
+- 在长时间操作期间定期发送心跳消息，让用户随时了解进度
+- 处理 Discord 的 2000 字符消息限制
 
-## 类结构
+## 类：DiscordBot
+
+继承 `BotBase`，增加 Discord 特定功能。
 
 ```python
 class DiscordBot(BotBase):
-    discord_config: DiscordConfig         # Discord 配置
-    bot: commands.Bot                     # discord.py Bot 实例
-    _channels: dict[str, Messageable]     # 频道缓存
-    _typing_tasks: dict[str, Task]        # 打字指示器任务
-    _heartbeat_msgs: dict[str, Message]   # 心跳消息缓存
-    _deferred_interactions: dict[str, Interaction]  # 延迟交互
-    _init_shown: set[str]                 # 已显示初始化信息的会话
+    bot: commands.Bot           # discord.py bot 实例
+    discord_config: DiscordConfig
+    _channels: dict[str, Messageable]        # 频道缓存
+    _typing_tasks: dict[str, Task]           # 活跃的打字指示器
+    _heartbeat_msgs: dict[str, Message]      # 当前心跳消息
+    _deferred_interactions: dict[str, Interaction]  # 待处理的斜杠命令响应
+    _init_shown: set[str]                    # 已显示初始化消息的会话
 ```
 
-## Discord 特性
+## 频道 ID 格式
 
-### 斜杠命令（Slash Commands）
+Discord 频道在内部使用 `discord:{channel_id}` 格式（如 `discord:123456789012345678`），以便在共享的 SessionRouter 中与 Telegram 频道区分。
 
-所有命令都注册为 Discord app_commands，用户在聊天窗口输入 `/` 时会看到命令列表和参数提示。
+## 斜杠命令
 
-注册的命令：
+所有命令都注册为 Discord 应用命令（斜杠命令），并带有完整的自动补全支持：
 
-| 命令 | 参数 | 补全 |
-|------|------|------|
-| `/start` | `machine`, `path` | 两者都有自动补全 |
-| `/resume` | `session_id` | 无 |
-| `/ls` | `target` (choice), `machine` | `target` 有预定义选项，`machine` 有补全 |
-| `/exit` | 无 | — |
-| `/rm` | `machine`, `path` | `machine` 有补全 |
-| `/mode` | `mode` (choice) | 4 个预定义选项 |
-| `/status` | 无 | — |
-| `/health` | `machine` (可选) | 有补全 |
-| `/monitor` | `machine` (可选) | 有补全 |
-| `/help` | 无 | — |
+### `/start <machine> <path>`
 
-### 自动补全（Autocomplete）
+- **machine** 自动补全：列出所有已配置的机器，排除跳板机，根据当前输入文本过滤。
+- **path** 自动补全：列出所选机器配置中的 `default_paths`。如果尚未选择机器，则显示所有机器的路径。
+- 通过 `interaction.response.send_message()` 直接发送初始响应，然后异步处理。
 
-机器名自动补全会自动排除纯跳板机（被用作 `proxy_jump` 的机器）。
+### `/resume <session_id>`
 
-路径自动补全基于所选机器的 `default_paths` 配置。如果还没有选择机器，会聚合所有机器的路径并去重。
+接受会话 ID 字符串参数。无自动补全（会话 ID 为 UUID）。
 
-```python
-@slash_start.autocomplete("machine")
-async def start_machine_autocomplete(interaction, current):
-    # 排除跳板机
-    jump_hosts = {m.proxy_jump for m in self.config.machines.values() if m.proxy_jump}
-    machines = [
-        mid for mid in self.config.machines
-        if mid not in jump_hosts and current.lower() in mid.lower()
-    ]
-    return [app_commands.Choice(name=m, value=m) for m in machines][:25]
-```
+### `/ls <target> [machine]`
 
-### 模式选择框
+- **target**：在"machine"和"session"之间选择（下拉菜单）。
+- **machine**：已配置机器 ID 的自动补全（可选，用于过滤会话）。
+- 使用延迟响应（`interaction.response.defer()`），因为列表操作可能需要时间。
 
-`/mode` 命令使用预定义的 `Choice` 列表，每个选项附带说明文字：
+### `/mode <mode>`
 
-```python
-@app_commands.choices(mode=[
-    Choice(name="bypass - Full auto (skip all permissions)", value="auto"),
-    Choice(name="code - Auto accept edits, confirm bash", value="code"),
-    Choice(name="plan - Read-only analysis", value="plan"),
-    Choice(name="ask - Confirm everything", value="ask"),
-])
-```
+- **mode**：带描述的下拉选择：
+  - "bypass - Full auto (skip all permissions)" -> `auto`
+  - "code - Auto accept edits, confirm bash" -> `code`
+  - "plan - Read-only analysis" -> `plan`
+  - "ask - Confirm everything" -> `ask`
 
-### 延迟交互（Deferred Interaction）
+### `/exit`、`/status`、`/help`
 
-部分命令使用 `interaction.response.defer()` 延迟响应，避免 Discord 的 3 秒交互超时。
+无参数的简单命令。全部使用延迟响应。
 
-延迟后，第一次调用 `send_message()` 时会自动使用 `interaction.followup.send()` 而非 `channel.send()`。
+### `/rm <machine> <path>`
 
-```python
-def _defer_and_register(self, interaction):
-    channel_id = f"discord:{interaction.channel_id}"
-    self._channels[channel_id] = interaction.channel
-    self._deferred_interactions[channel_id] = interaction
-    return channel_id
-```
+machine 参数有自动补全，path 手动输入。使用延迟响应。
 
-## 消息处理
+### `/health [machine]`、`/monitor [machine]`
 
-### on_message 事件
+可选的 machine 参数带自动补全。使用延迟响应。
 
-处理非命令的普通消息。过滤条件：
-1. 忽略 Bot 自身的消息
-2. 忽略其他 Bot 的消息
-3. 忽略以 `/` 开头的消息（由斜杠命令处理）
-4. 如果配置了 `allowed_channels`，只在允许的频道中响应
+## 延迟交互
 
-通过的消息会被转发到 `_forward_message_with_heartbeat()`。
+Discord 斜杠命令要求在 3 秒内响应。对于耗时较长的操作，机器人使用 `interaction.response.defer()` 确认命令，然后通过 `interaction.followup.send()` 发送实际响应。
 
-### 频道 ID 格式
-
-Discord 频道使用 `discord:{channel_id}` 格式的内部 ID，例如 `discord:123456789012345678`。
+`_defer_and_register()` 方法存储延迟的交互。该频道的下一次 `send_message()` 调用会自动使用 `followup.send()` 而非 `channel.send()`。
 
 ## 打字指示器
 
-在 Claude 处理消息期间，显示 "Bot is typing..." 指示器。
+当 Claude 正在处理消息时，机器人在频道中显示"Bot is typing..."：
 
 ```python
-async def _start_typing(self, channel_id):
-    async def typing_loop():
-        while True:
-            await channel.typing()      # 触发打字指示器
-            await asyncio.sleep(8)       # Discord 打字指示器持续约 10 秒
-    task = asyncio.create_task(typing_loop())
+async def _start_typing(channel_id):
+    # 每 8 秒发送 typing()（Discord 打字指示器持续约 10 秒）
 ```
+
+打字循环作为后台任务运行，在响应流完成时取消。
 
 ## 心跳状态更新
 
-这是 Discord Bot 特有的功能。在 Claude 处理消息期间，每 25 秒发送一条状态更新消息，告知用户 Claude 正在做什么。
+对于长时间运行的 Claude 操作，机器人每 25 秒发送一次定期状态消息，让用户及时了解进度，避免产生机器人已无响应的错觉。
 
 ```python
-HEARTBEAT_INTERVAL = 25  # 秒
+async def _heartbeat_loop(channel_id, start_time, event_tracker):
+    # 每 25 秒发送/更新一条状态消息，例如：
+    # "[1m30s] Claude is working... Using tool: Write"
 ```
 
-心跳消息格式示例：
-```
-[1m30s] Claude is working... Using tool: Write
-[2m05s] Claude is working... Writing response...
-[3m10s] Claude is working... Thinking...
-```
+心跳消息反映处理的当前状态：
+- **tool_name** 已设置："Using tool: **{tool_name}**"
+- 有内容的 **partial** 事件："Writing response..."
+- **tool_use/tool_result** 事件："Processing tool results..."
+- 默认："Thinking..."
 
-**event_tracker**：心跳循环和消息流式处理共享一个字典，用于跟踪 Claude 的当前状态：
+操作完成时心跳消息会被删除。
 
-```python
-event_tracker = {
-    "last_event_type": "",    # 最近收到的事件类型
-    "tool_name": "",          # 当前使用的工具名
-    "done": False,            # 是否处理完成
-    "partial_len": 0,         # 累积的部分响应长度
-}
-```
+## 消息转发覆盖
 
-状态判断逻辑：
-- 有 `tool_name` → "Using tool: **{name}**"
-- `partial` 事件且有内容 → "Writing response..."
-- `tool_use` / `tool_result` 之后 → "Processing tool results..."
-- 其他 → "Thinking..."
+Discord 机器人用 `_forward_message_with_heartbeat()` 覆盖基类的 `_forward_message`，在标准流式逻辑之上增加打字指示器和心跳更新。`on_message` 事件处理器对非命令消息直接调用此方法。
 
-心跳消息在处理完成后会被自动删除。
+## 平台方法
 
-## 消息发送
+### `send_message(channel_id, text) -> Message`
 
-### send_message(channel_id, text) -> Message
+向 Discord 频道发送消息。处理以下情况：
 
-发送消息到 Discord 频道。
+1. **延迟交互**：如果存在待处理的延迟交互，优先使用 `interaction.followup.send()`
+2. **消息拆分**：使用 `split_message()`，`max_len=2000`（Discord 的限制）
+3. **格式化回退**：如果消息发送失败（如无效的 Markdown），去除格式化后重试
+4. 返回最后发送的 `discord.Message` 对象
 
-**特殊逻辑**：
-1. 如果有待消费的延迟交互，使用 `interaction.followup.send()`
-2. 否则使用 `channel.send()`
-3. 自动按 2000 字符限制分割长消息
-4. 发送失败时尝试去除格式化（`**`、`` ` ``）后重发
+### `edit_message(channel_id, message_obj, text) -> None`
 
-### edit_message(channel_id, message_obj, text)
+编辑已有的 Discord 消息。如有必要截断至 2000 字符。编辑失败时回退为发送新消息。
 
-编辑已有消息。超过 2000 字符的内容会被截断。
+## 事件处理
 
-编辑失败时（例如消息太旧），会尝试发送一条新消息作为后备。
+### `on_ready`
 
-## 初始化信息去重
+记录机器人的用户名和 ID，然后将斜杠命令同步到所有服务器。
 
-使用 `_init_shown` 集合跟踪已显示 "Connected to {model}" 信息的会话，避免同一会话多次显示初始化信息。
+### `on_message`
 
-```python
-if daemon_sid not in self._init_shown:
-    self._init_shown.add(daemon_sid)
-    await self.send_message(channel_id, f"Connected to **{model}** | Mode: **{mode_str}**")
-```
+处理普通（非命令）消息：
+1. 忽略机器人自身和其他机器人的消息
+2. 忽略以 `/` 开头的消息（由斜杠命令处理）
+3. 检查 `allowed_channels` 白名单
+4. 转发到 `_forward_message_with_heartbeat()`
+
+## 常量
+
+| 常量 | 值 | 说明 |
+|---|---|---|
+| `HEARTBEAT_INTERVAL` | 25 秒 | 心跳状态消息的发送间隔 |
+| `STREAM_UPDATE_INTERVAL` | 1.5 秒 | 流式文本更新的时间间隔 |
+| `STREAM_BUFFER_FLUSH_SIZE` | 1800 字符 | 缓冲区达到此大小时强制发送新消息 |
 
 ## 与其他模块的关系
 
-- **bot_base.py** — 继承所有命令处理逻辑
-- **message_formatter.py** — 使用 `split_message()`、`format_error()`、`display_mode()`
-- **config.py** — 使用 `DiscordConfig`
+- 继承 **BotBase** 的命令处理和消息转发逻辑
+- **main.py** 创建并启动 DiscordBot
+- 使用 **message_formatter** 的 `split_message()`、`format_error()` 和 `display_mode()`

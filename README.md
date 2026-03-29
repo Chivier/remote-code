@@ -5,137 +5,163 @@
 <h1 align="center">Codecast</h1>
 
 <p align="center">
-  Control Claude CLI on remote machines from Discord & Telegram
+  One bot to manage AI coding agents across all your machines
 </p>
 
 <p align="center">
   <a href="https://pypi.org/project/codecast/"><img src="https://img.shields.io/pypi/v/codecast" alt="PyPI"></a>
   <a href="https://github.com/Chivier/codecast/actions"><img src="https://github.com/Chivier/codecast/actions/workflows/lint.yml/badge.svg" alt="CI"></a>
+  <a href="https://chivier.github.io/codecast/"><img src="https://img.shields.io/badge/docs-mdBook-blue" alt="Docs"></a>
   <a href="https://github.com/Chivier/codecast/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Chivier/codecast" alt="License"></a>
   <img src="https://img.shields.io/pypi/pyversions/codecast" alt="Python">
 </p>
 
 ---
 
-Send a message in Discord or Telegram. It reaches Claude CLI on your GPU server, your cloud VM, or any machine with SSH access — and streams the response back in real time.
+Send a message from Discord, Telegram, or Lark. It reaches an AI coding agent on your GPU server, cloud VM, or any SSH-accessible machine — and streams the response back in real time.
 
-## Why Codecast?
+## How is this different from the official Claude Discord bot?
 
-| Problem | Solution |
-|---------|----------|
-| Claude CLI only runs locally | Run it on any remote machine via SSH |
-| Lose context when you close the terminal | Sessions persist — detach and resume anytime |
-| Can't use Claude on mobile | Chat through Discord or Telegram from any device |
-| Managing multiple dev machines is tedious | One bot, many machines — switch with a command |
+The official Claude bot gives you a single conversation with Claude in the cloud. **Codecast** is fundamentally different:
+
+| | Official Claude Bot | Codecast |
+|---|---|---|
+| **Where Claude runs** | Anthropic's cloud | Your own machines (GPU servers, VMs, dev boxes) |
+| **Session management** | One conversation | Multiple persistent sessions across multiple machines |
+| **Code access** | No file system access | Full access to your projects via Claude CLI |
+| **AI backends** | Claude only | Claude, Codex (OpenAI), Gemini CLI, OpenCode |
+| **Chat platforms** | Discord only | Discord, Telegram, Lark (Feishu) |
+| **Multiplexing** | One bot = one conversation | One bot = many machines x many sessions |
+
+Codecast turns your chat app into a **remote control panel** for AI coding agents running on your infrastructure.
 
 ## Architecture
 
-<p align="center">
-  <img src="docs/images/framework.svg" alt="Codecast Architecture" width="600">
-</p>
+```
+You (Discord / Telegram / Lark)
+ |
+ v
++------------------+          SSH tunnel          +------------------+
+|    Head Node     |  ----------------------->   |     Daemon       |
+|    (Python)      |         JSON-RPC + SSE       |     (Rust)       |
+|                  |                              |                  |
+|  - Bot adapters  |    Can manage multiple       |  - Axum HTTP     |
+|  - Engine        |    machines in parallel       |  - Session pool  |
+|  - SSH tunnels   |                              |  - CLI adapters  |
++------------------+                              +--------+---------+
+                                                           |
+                                                    stdin/stdout
+                                                           |
+                                                  +--------v---------+
+                                                  |   AI CLI Agent   |
+                                                  |  Claude / Codex  |
+                                                  | Gemini / OpenCode|
+                                                  +------------------+
+```
+
+A single Head Node connects to any number of remote machines. Each machine runs a lightweight Rust daemon that manages AI CLI processes. Sessions persist across disconnects — detach from your phone, resume from your laptop.
 
 ## Quick Start
 
-**Prerequisites:** Python 3.11+, [Rust/cargo](https://rustup.rs/), SSH access to a remote machine with Claude CLI installed.
-
 ```bash
 pip install codecast
-```
-
-**Configure:**
-
-```bash
 cp config.example.yaml ~/.codecast/config.yaml
 $EDITOR ~/.codecast/config.yaml   # add machines + bot token
-```
-
-**Run:**
-
-```bash
 codecast
 ```
 
-Then open Discord or Telegram and type `/start my-server ~/projects/myapp`.
+Then open your chat app and type `/start my-server ~/projects/myapp`.
 
 ## Key Features
 
-- **Persistent sessions** — Claude CLI runs as a long-lived process; context survives across messages
-- **SSH tunnels** — daemon binds to localhost only, never exposed to the internet
-- **Detach & resume** — `/exit` keeps the session alive, `/resume` picks it back up
-- **Multiple machines** — connect any number of servers, switch between them
-- **Permission modes** — `auto` (full autonomy), `code` (auto-edit files), `plan` (read-only), `ask` (confirm everything)
-- **Real-time streaming** — responses stream back via SSE as Claude types
-- **Mobile-friendly** — works from any device with Discord or Telegram
+### Multi-Machine Session Management
+
+Connect any number of servers. Each session has a human-friendly name (e.g., `bright-falcon`). Detach with `/exit`, resume with `/resume bright-falcon` from any device.
+
+### Multiple AI Backends
+
+Not just Claude. Start sessions with different AI CLIs:
+
+```
+/start my-server ~/project --cli codex
+/start gpu-box ~/ml-project --cli gemini
+/start dev-vm ~/webapp --cli claude
+```
+
+### Three Chat Platforms
+
+- **Discord** — slash commands, autocomplete, interactive buttons
+- **Telegram** — inline keyboards, file sharing, HTML formatting
+- **Lark (Feishu)** — rich text messages, WebSocket connection
+
+### Interactive Questions
+
+When an AI agent asks you a question with options, Codecast presents it with native UI elements — buttons on Discord, inline keyboards on Telegram — so you can tap to respond instead of typing.
+
+### Permission Modes
+
+Control how much autonomy the AI agent has:
+
+| Mode | Behavior |
+|------|----------|
+| `auto` | Full autonomy — no confirmations |
+| `code` | Auto-accept file edits, confirm shell commands |
+| `plan` | Read-only analysis |
+| `ask` | Confirm every action |
+
+### Real-Time Streaming
+
+Responses stream back as the AI types. Choose how tool calls are displayed:
+- **timer** (default) — clean "Working 5s" indicator, results sent at end
+- **append** — see each tool call as it happens
+- **batch** — summary of all tool calls at end
+
+### SSH Security
+
+The daemon binds to `127.0.0.1` only — never exposed to the internet. All communication goes through SSH tunnels. The daemon binary is auto-deployed to remote machines via SCP.
 
 ## Commands
 
 | Command | What it does |
 |---------|-------------|
-| `/start <machine> <path>` | Start a new Claude session |
+| `/start <machine> <path>` | Start a new session (add `--cli codex` etc.) |
 | `/resume <name>` | Resume a detached session |
 | `/new` | New session, same directory |
-| `/clear` | Fresh context, same directory |
 | `/exit` | Detach (process keeps running) |
+| `/stop` | Interrupt current operation |
+| `/model <name>` | Switch AI model |
+| `/mode <auto\|code\|plan\|ask>` | Switch permission mode |
+| `/tool-display <timer\|append\|batch>` | Switch tool display mode |
 | `/ls machine` | List machines |
 | `/ls session` | List sessions |
-| `/mode <auto\|code\|plan\|ask>` | Switch permission mode |
 | `/status` | Current session info |
 | `/health` | Daemon health check |
 
-See [Commands Reference](./docs/commands-reference.md) for the full list.
+See the [full command reference](https://chivier.github.io/codecast/commands.html) for all commands.
 
 ## Documentation
 
+Full documentation: **[chivier.github.io/codecast](https://chivier.github.io/codecast/)** (English & Chinese)
+
 | Guide | Description |
 |-------|-------------|
-| [Getting Started](./docs/getting-started.md) | Installation, first session walkthrough |
-| [Adding a Discord Bot](./docs/adding-a-discord-bot.md) | Create a Discord Application step by step |
-| [Adding a Telegram Bot](./docs/adding-a-telegram-bot.md) | Create a Telegram bot via BotFather |
-| [Adding a Server](./docs/adding-a-server.md) | SSH config, jump hosts, password auth |
-| [Commands Reference](./docs/commands-reference.md) | Every command with examples |
-
-## Configuration
-
-Config files are searched in order:
-1. CLI argument: `codecast /path/to/config.yaml`
-2. `~/.codecast/config.yaml`
-3. `./config.yaml` (dev fallback)
+| [Getting Started](https://chivier.github.io/codecast/getting-started.html) | Installation, first session walkthrough |
+| [Configuration](https://chivier.github.io/codecast/configuration.html) | Config format, peers, bot tokens |
+| [Commands](https://chivier.github.io/codecast/commands.html) | Every command with examples |
+| [Architecture](https://chivier.github.io/codecast/architecture.html) | System design and internals |
 
 ## Requirements
 
 - **Python 3.11+** — head node
-- **SSH access** — to remote machine(s) with Claude CLI installed
-- **Bot token** — Discord and/or Telegram
-- **Rust toolchain** (optional) — only needed to build the daemon binary from source
+- **SSH access** — to remote machine(s) with an AI CLI installed (Claude, Codex, Gemini, or OpenCode)
+- **Bot token** — for Discord, Telegram, and/or Lark
 
-### Building the Daemon (optional)
-
-The head node (Python) installs without Rust. The daemon binary is a separate Rust project that runs on remote machines. If you need to build it from source:
+The Rust daemon binary is auto-deployed. To build from source:
 
 ```bash
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
-
-# Build the daemon
-git clone https://github.com/Chivier/codecast.git
-cd codecast
 cargo build --release
-# Binary at: target/release/codecast-daemon
+# Binary: target/release/codecast-daemon
 ```
-
-> **Note:** On some systems you may also need a C compiler and development headers:
-> - **Debian/Ubuntu:** `sudo apt install build-essential pkg-config libssl-dev`
-> - **Fedora/RHEL:** `sudo dnf install gcc pkg-config openssl-devel`
-> - **macOS:** `xcode-select --install`
-
-### One-line Install (from source)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Chivier/codecast/main/scripts/install.sh | bash
-```
-
-This clones the repo, creates a virtualenv, installs Python dependencies, and optionally builds the daemon if Rust is available.
 
 ## License
 

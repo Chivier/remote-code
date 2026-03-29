@@ -1,177 +1,119 @@
-# 会话路由 (session_router.py)
+# 会话路由器（session_router.py）
 
-`session_router.py` 使用 SQLite 数据库管理会话状态，将聊天频道映射到远程机器上的 Claude 会话。
+**文件：** `head/session_router.py`
 
-**源文件**：`head/session_router.py`
+在本地 SQLite 数据库中管理会话状态。将机器人频道（Discord 或 Telegram）映射到远程机器上的活跃 Claude 会话。
 
-## 职责
+## 用途
 
-1. 持久化存储所有会话的状态（活跃、已分离、已销毁）
-2. 将聊天频道（channel_id）映射到远程会话
-3. 管理会话生命周期：创建 → 分离 → 恢复 → 销毁
-4. 记录历史会话日志，支持会话恢复查询
+- 在 Head Node 重启后维持持久化的会话注册表
+- 将聊天频道映射到远程 Claude 会话
+- 追踪会话生命周期：active -> detached -> destroyed
+- 记录会话历史以支持恢复功能
+- 提供按频道、守护进程 ID 或机器/路径查找会话的方法
+
+## 数据库模式
+
+### `sessions` 表
+
+存储每个会话的当前状态。主键是 `channel_id`（每个频道只有一个活跃会话）。
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `channel_id` | TEXT（PK） | 机器人特定的频道 ID（如 `discord:12345` 或 `telegram:67890`） |
+| `machine_id` | TEXT | 远程机器标识符 |
+| `path` | TEXT | 远程机器上的项目路径 |
+| `daemon_session_id` | TEXT | 守护进程分配的 UUID |
+| `sdk_session_id` | TEXT | Claude SDK 会话 ID（用于 `--resume`） |
+| `status` | TEXT | `active`、`detached` 或 `destroyed` |
+| `mode` | TEXT | 权限模式（`auto`、`code`、`plan`、`ask`） |
+| `created_at` | TEXT | ISO 8601 时间戳 |
+| `updated_at` | TEXT | ISO 8601 时间戳 |
+
+### `session_log` 表
+
+已分离会话的只追加日志。用于会话恢复查找。
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `id` | INTEGER（PK） | 自增 ID |
+| `channel_id` | TEXT | 原始频道 |
+| `machine_id` | TEXT | 会话运行所在的机器 |
+| `path` | TEXT | 项目路径 |
+| `daemon_session_id` | TEXT | 守护进程会话 UUID |
+| `sdk_session_id` | TEXT | Claude SDK 会话 ID |
+| `mode` | TEXT | 分离时的权限模式 |
+| `created_at` | TEXT | 会话创建时间 |
+| `detached_at` | TEXT | 会话分离时间 |
+
+在 `machine_id` 和 `daemon_session_id` 上建有索引，用于快速查找。
 
 ## Session 数据类
 
 ```python
 @dataclass
 class Session:
-    channel_id: str          # 聊天频道 ID (格式: "discord:123" 或 "telegram:456")
-    machine_id: str          # 远程机器 ID
-    path: str                # 远程项目路径
-    daemon_session_id: str   # Daemon 侧的会话 ID (UUID)
-    sdk_session_id: str|None # Claude SDK 会话 ID (用于 --resume)
-    status: str              # active | detached | destroyed
-    mode: str                # auto | code | plan | ask
-    created_at: str          # 创建时间 (ISO 格式)
-    updated_at: str          # 最后更新时间 (ISO 格式)
-```
-
-## 数据库结构
-
-### sessions 表
-
-主会话表。每个 `channel_id` 最多一条记录（PRIMARY KEY）。
-
-```sql
-CREATE TABLE sessions (
-    channel_id TEXT PRIMARY KEY,
-    machine_id TEXT NOT NULL,
-    path TEXT NOT NULL,
-    daemon_session_id TEXT NOT NULL,
-    sdk_session_id TEXT,
-    status TEXT NOT NULL DEFAULT 'active',
-    mode TEXT NOT NULL DEFAULT 'auto',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-```
-
-### session_log 表
-
-历史会话日志。当会话被分离（detach）时，记录会写入此表。用于 `/resume` 命令查找历史会话。
-
-```sql
-CREATE TABLE session_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    channel_id TEXT NOT NULL,
-    machine_id TEXT NOT NULL,
-    path TEXT NOT NULL,
-    daemon_session_id TEXT NOT NULL,
-    sdk_session_id TEXT,
-    mode TEXT,
-    created_at TEXT NOT NULL,
-    detached_at TEXT
-);
-
-CREATE INDEX idx_session_log_machine ON session_log(machine_id);
-CREATE INDEX idx_session_log_daemon_id ON session_log(daemon_session_id);
+    channel_id: str           # 如 "discord:123456"
+    machine_id: str           # 如 "gpu-1"
+    path: str                 # 如 "/home/user/project"
+    daemon_session_id: str    # 来自守护进程的 UUID
+    sdk_session_id: Optional[str]  # Claude SDK 会话 ID
+    status: str               # "active" | "detached" | "destroyed"
+    mode: str                 # "auto" | "code" | "plan" | "ask"
+    created_at: str           # ISO 8601
+    updated_at: str           # ISO 8601
 ```
 
 ## 关键方法
 
-### resolve(channel_id) -> Optional[Session]
+### `resolve(channel_id: str) -> Optional[Session]`
 
-查找指定频道的**活跃**会话。
+查找频道的活跃会话。如果没有活跃会话，返回 `None`。这是在向 Claude 转发用户消息时使用的主要查找方法。
 
-只返回 `status = 'active'` 的会话。这是最常用的方法——每次用户发送普通消息时都会调用，用于确定消息应该转发到哪个远程会话。
+### `register(channel_id, machine_id, path, daemon_session_id, mode) -> None`
 
-```python
-session = router.resolve("discord:123456789")
-if session:
-    # 转发消息到 session.machine_id 上的 session.daemon_session_id
-```
+为频道注册新的活跃会话。如果该频道上已存在活跃会话，会先自动分离（移入会话日志）。新会话以 `active` 状态插入。
 
-### register(channel_id, machine_id, path, daemon_session_id, mode)
+### `update_sdk_session(channel_id: str, sdk_session_id: str) -> None`
 
-注册一个新的活跃会话。
+更新活跃会话的 SDK 会话 ID。当收到来自 Claude 的 `result` 事件时调用，该事件包含后续 `--resume` 调用所需的会话 ID。
 
-**行为**：
-1. 如果该频道已有活跃会话，先将旧会话**自动分离**
-2. 使用 `INSERT OR REPLACE` 插入新会话记录
-3. 状态设为 `active`
+### `update_mode(channel_id: str, mode: str) -> None`
 
-这保证了每个频道在任何时刻最多只有一个活跃会话。
+更新频道上活跃会话的权限模式。当用户通过 `/mode` 更改模式时调用。
 
-### update_sdk_session(channel_id, sdk_session_id)
+### `detach(channel_id: str) -> Optional[Session]`
 
-更新活跃会话的 SDK 会话 ID。在 Claude 返回 `result` 事件时调用，将 Claude 的内部会话 ID 保存下来，用于后续的 `--resume` 恢复对话上下文。
+在不销毁会话的情况下分离频道上的活跃会话。会话将：
 
-### update_mode(channel_id, mode)
+1. 以当前时间戳作为 `detached_at` 复制到 `session_log`
+2. 在 `sessions` 表中状态更新为 `detached`
 
-更新活跃会话的权限模式。在 `/mode` 命令执行后调用。
+返回已分离的会话，如果未找到活跃会话则返回 `None`。已分离的会话可以稍后用 `/resume` 恢复。
 
-### detach(channel_id) -> Optional[Session]
+### `destroy(channel_id: str) -> Optional[Session]`
 
-分离活跃会话。
+将会话标记为 `destroyed`。与 detach 不同，此操作不记录会话日志。返回已销毁的会话或 `None`。
 
-**行为**：
-1. 将会话记录写入 `session_log`（包含 `detached_at` 时间戳）
-2. 将 `sessions` 表中的 `status` 更新为 `detached`
-3. 返回被分离的 Session 对象
+### `list_sessions(machine_id: Optional[str]) -> list[Session]`
 
-内部使用 `_detach_internal` 方法在同一数据库连接中执行，支持事务。
+列出所有会话，可选按机器 ID 过滤。按 `updated_at` 降序（最近优先）返回。包含所有状态的会话。
 
-### destroy(channel_id) -> Optional[Session]
+### `list_active_sessions() -> list[Session]`
 
-标记会话为已销毁。将 `status` 更新为 `destroyed`。
+仅列出状态为 `active` 的会话。
 
-> **注意**：`destroy` 只更新数据库状态，不会删除记录。实际终止 Daemon 侧的 Claude 进程需要通过 `DaemonClient.destroy_session()` 完成。
+### `find_session_by_daemon_id(daemon_session_id: str) -> Optional[Session]`
 
-### list_sessions(machine_id: Optional[str]) -> list[Session]
+按守护进程分配的 UUID 查找会话。同时搜索活跃的 `sessions` 表和 `session_log` 表。由 `/resume` 命令使用，用于定位之前分离的会话。
 
-列出所有会话，可选按机器 ID 过滤。按 `updated_at` 降序排列。
+### `find_sessions_by_machine_path(machine_id: str, path: str) -> list[Session]`
 
-### list_active_sessions() -> list[Session]
-
-仅列出活跃会话（`status = 'active'`）。
-
-### find_session_by_daemon_id(daemon_session_id) -> Optional[Session]
-
-通过 Daemon 会话 ID 查找会话。
-
-**查找顺序**：
-1. 先在 `sessions` 表中查找
-2. 如果没找到，在 `session_log` 表中查找最近的记录
-
-这个方法主要用于 `/resume` 命令，允许用户通过 Daemon 侧的会话 ID 恢复之前的会话。
-
-### find_sessions_by_machine_path(machine_id, path) -> list[Session]
-
-按机器 ID 和路径查找匹配的会话。用于 `/rm` 命令批量销毁会话。
-
-## 会话生命周期
-
-```
-                 /start
-                    │
-                    ▼
-              ┌──────────┐
-              │  active   │ ← 每个频道最多一个活跃会话
-              └────┬──────┘
-                   │
-          /exit    │    /start (同频道新会话)
-                   │
-                   ▼
-              ┌──────────┐
-              │ detached  │ ← 记录到 session_log
-              └────┬──────┘
-                   │
-         /resume   │    /rm
-          ┌────────┤
-          │        │
-          ▼        ▼
-     ┌────────┐ ┌───────────┐
-     │ active │ │ destroyed  │
-     └────────┘ └───────────┘
-```
-
-## 线程安全
-
-`SessionRouter` 在每次操作时创建新的 SQLite 连接并在操作完成后关闭。这意味着它天然支持多线程/多协程并发访问（SQLite 的文件锁机制处理并发写入）。
+查找特定机器和路径上的所有会话。由 `/rm` 命令使用，销毁匹配机器/路径组合的会话。
 
 ## 与其他模块的关系
 
-- **bot_base.py** — 调用 `resolve()`、`register()`、`detach()`、`destroy()`、`list_sessions()` 等所有方法
-- **main.py** — 实例化 `SessionRouter`，指定数据库路径
-- **daemon_client.py** — SessionRouter 保存的 `daemon_session_id` 被传递给 DaemonClient 的各种方法
+- **main.py** 使用数据库路径创建 SessionRouter
+- **BotBase** 在每次消息转发前调用 `resolve()`，在 `/start` 时调用 `register()`，在 `/exit` 时调用 `detach()`，通过 `/rm` 调用 `destroy()`，以及为 `/ls`、`/resume`、`/status` 调用查询方法
+- **BotBase** 在 `result` 事件提供 Claude SDK 会话 ID 时调用 `update_sdk_session()`
+- **BotBase** 在用户更改权限模式时调用 `update_mode()`

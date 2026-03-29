@@ -1,33 +1,33 @@
-# 主入口 (main.py)
+# 入口点（main.py）
 
-`main.py` 是 Codecast Head Node 的入口点，负责加载配置、初始化所有核心组件、启动 Bot 并处理优雅关闭。
+**文件：** `head/main.py`
 
-**源文件**：`head/main.py`
+Codecast Head Node 的入口点。该模块通过加载配置、初始化共享组件、启动机器人和处理优雅关闭来引导整个系统。
 
-## 职责
+## 用途
 
-1. 加载并验证 `config.yaml` 配置文件
-2. 实例化三个核心组件：`SSHManager`、`SessionRouter`、`DaemonClient`
-3. 根据配置创建 Discord Bot 和/或 Telegram Bot
-4. 并发启动所有 Bot
-5. 监听系统信号（SIGTERM/SIGINT）进行优雅关闭
-6. 清理所有资源（Bot、HTTP 客户端、SSH 隧道）
+- 加载并验证 `config.yaml`
+- 创建共享基础设施（SSHManager、SessionRouter、DaemonClient）
+- 初始化并启动 Discord 和/或 Telegram 机器人
+- 处理 SIGTERM/SIGINT 的优雅关闭
 
-## 启动流程
+## 主函数
 
 ```python
-async def main(config_path: str = "config.yaml") -> None:
+async def main(config_path: str = "config.yaml") -> None
 ```
 
-### 1. 配置加载
+`main()` 协程是主入口点，执行以下步骤：
+
+### 1. 加载配置
 
 ```python
 config = load_config(config_path)
 ```
 
-从指定路径加载 YAML 配置。如果文件不存在或解析失败，程序直接退出并打印错误信息。
+加载 `config.yaml`（或通过命令行参数传入的自定义路径）。如果文件不存在或无效，进程会以错误消息退出。
 
-### 2. 组件初始化
+### 2. 初始化共享组件
 
 ```python
 ssh_manager = SSHManager(config)
@@ -35,111 +35,72 @@ session_router = SessionRouter(db_path=str(Path(__file__).parent / "sessions.db"
 daemon_client = DaemonClient()
 ```
 
-- `SSHManager` — 接受完整的 `Config` 对象，管理到所有远程机器的 SSH 连接
-- `SessionRouter` — 使用 SQLite 数据库（位于 `head/sessions.db`）持久化会话状态
-- `DaemonClient` — 无状态的 JSON-RPC 客户端，按需创建 HTTP 会话
+这三个组件只创建一次，在所有机器人之间共享：
 
-### 3. Bot 初始化
+- **SSHManager**：管理到所有已配置机器的 SSH 连接和隧道。接受完整的配置以访问机器定义和守护进程部署设置。
+- **SessionRouter**：基于 SQLite 的会话注册表。数据库存储为 `head/sessions.db`（位于 Python 源文件旁边）。
+- **DaemonClient**：无状态的 JSON-RPC 客户端，使用共享的 aiohttp 会话。
+
+### 3. 初始化机器人
 
 ```python
 discord_bot = DiscordBot(ssh_manager, session_router, daemon_client, config)
 telegram_bot = TelegramBot(ssh_manager, session_router, daemon_client, config)
 ```
 
-两种 Bot 都接收相同的三个共享组件和配置对象。只有在 `config.yaml` 中配置了对应的 token 时才会创建对应的 Bot。
+只有在配置了 token 的情况下才会创建对应的机器人。如果没有任何机器人配置有效 token，进程会以错误退出。
 
-如果没有配置任何 Bot（既没有 Discord token 也没有 Telegram token），程序会报错退出。
+### 4. 启动机器人
 
-### 4. 信号处理
+```python
+task = asyncio.create_task(discord_bot.start(), name="discord")
+task = asyncio.create_task(telegram_bot.start(), name="telegram")
+```
+
+机器人作为并发的 asyncio 任务运行。主协程随后等待以下任一情况：
+- 关闭信号（SIGTERM/SIGINT）
+- 某个机器人任务崩溃（最先完成者）
+
+### 5. 优雅关闭
 
 ```python
 def handle_shutdown(sig: signal.Signals) -> None:
-    logger.info(f"Received {sig.name}, shutting down...")
     shutdown_event.set()
-
-for sig in (signal.SIGTERM, signal.SIGINT):
-    loop.add_signal_handler(sig, handle_shutdown, sig)
 ```
 
-使用 `asyncio.Event` 和信号处理器实现优雅关闭。收到 SIGTERM 或 SIGINT 时设置事件，主循环检测到后开始清理。
+`SIGTERM` 和 `SIGINT` 的信号处理器会设置一个关闭事件。触发时：
 
-### 5. 并发启动
+1. 所有机器人通过 `bot.stop()` 停止
+2. DaemonClient 的 HTTP 会话关闭
+3. 所有 SSH 隧道通过 `ssh_manager.close_all()` 关闭
+4. 剩余的 asyncio 任务被取消
 
-```python
-if discord_bot:
-    task = asyncio.create_task(discord_bot.start(), name="discord")
-if telegram_bot:
-    task = asyncio.create_task(telegram_bot.start(), name="telegram")
-```
-
-每个 Bot 作为独立的 asyncio Task 运行。使用 `asyncio.wait()` 等待：
-- shutdown_event 被设置（用户请求关闭）
-- 任何一个 Bot task 完成（可能是崩溃）
-
-如果某个 Bot 崩溃（task 有异常），会记录错误日志。
-
-### 6. 清理流程
-
-```python
-# 停止所有 Bot
-for bot in bots:
-    await bot.stop()
-
-# 关闭 HTTP 客户端
-await daemon_client.close()
-
-# 关闭所有 SSH 隧道
-await ssh_manager.close_all()
-
-# 取消残余任务
-for task in tasks:
-    if not task.done():
-        task.cancel()
-```
-
-清理的顺序经过精心设计：
-1. **先停止 Bot** — 不再接收新的用户消息
-2. **关闭 HTTP 客户端** — 断开与 Daemon 的连接
-3. **关闭 SSH 隧道** — 释放网络资源
-4. **取消残余任务** — 确保没有泄漏的协程
-
-## 命令行使用
+## 命令行用法
 
 ```bash
-# 使用默认配置文件 (config.yaml)
+# 默认配置
 python -m head.main
 
-# 使用指定配置文件
-python -m head.main /path/to/my-config.yaml
+# 自定义配置路径
+python -m head.main /path/to/config.yaml
 ```
 
-## 日志
+配置路径从 `sys.argv[1]` 读取（如果提供），默认为 `"config.yaml"`。
 
-使用 Python 标准 `logging` 模块，配置格式为：
+## 日志记录
 
-```
-%(asctime)s [%(name)s] %(levelname)s: %(message)s
-```
-
-日志级别默认为 `INFO`。各模块的 logger 名称：
-- `codecast` — 主入口
-- `head.ssh_manager` — SSH 管理
-- `head.session_router` — 会话路由
-- `head.daemon_client` — Daemon 客户端
-- `head.bot_discord` / `head.bot_telegram` — Bot 模块
-
-## 与其他模块的关系
-
-`main.py` 是唯一直接实例化所有核心组件的模块：
+该模块以 `INFO` 级别配置 Python 的日志系统，格式为：
 
 ```
-main.py
-  ├── load_config()     → config.py
-  ├── SSHManager()      → ssh_manager.py
-  ├── SessionRouter()   → session_router.py
-  ├── DaemonClient()    → daemon_client.py
-  ├── DiscordBot()      → bot_discord.py
-  └── TelegramBot()     → bot_telegram.py
+2026-03-14 10:00:00 [codecast] INFO: message
 ```
 
-所有组件通过构造函数注入的方式共享，Bot 实例持有对 `ssh_manager`、`session_router` 和 `daemon_client` 的引用。
+`head/` 下的所有模块使用 `logging.getLogger(__name__)` 并继承此配置。
+
+## 错误处理
+
+- 配置文件缺失：记录错误并以代码 1 退出
+- machines 字典为空：记录错误并以代码 1 退出
+- 没有配置机器人（没有 token）：记录错误并以代码 1 退出
+- 运行时机器人崩溃：记录异常，触发关闭
+- 清理错误：以警告级别记录，不影响其他清理步骤

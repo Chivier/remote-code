@@ -1,189 +1,126 @@
-# Daemon 客户端 (daemon_client.py)
+# 守护进程客户端（daemon_client.py）
 
-`daemon_client.py` 实现了与远程 Daemon 通信的 JSON-RPC 客户端，支持普通请求和 SSE 流式响应。
+**文件：** `head/daemon_client.py`
 
-**源文件**：`head/daemon_client.py`
+通过 SSH 隧道与远程代理守护进程通信的 JSON-RPC 客户端。同时处理常规 JSON 响应和 SSE（Server-Sent Events）流式响应。
 
-## 职责
+## 用途
 
-1. 通过 SSH 隧道向远程 Daemon 发送 JSON-RPC 请求
-2. 处理 SSE（Server-Sent Events）流式响应
-3. 提供所有 RPC 方法的类型安全封装
-4. 错误处理和连接管理
+- 向守护进程的 HTTP 端点发送 JSON-RPC 请求
+- 解析 `session.send` 的 SSE 流（Claude 的流式响应）
+- 为每个 RPC 操作提供有类型的方法
+- 处理连接错误和守护进程报告的错误
 
-## DaemonClient 类
+## 类：DaemonClient
 
 ```python
 class DaemonClient:
-    timeout: int = 300           # 默认超时（秒）
-    _session: aiohttp.ClientSession  # HTTP 会话（懒初始化）
+    timeout: int = 300  # 默认超时时间（秒）
 ```
 
-### 构造和清理
+### 内部方法
 
-```python
-client = DaemonClient(timeout=300)  # 5 分钟默认超时
+#### `_url(local_port: int) -> str`
 
-# 使用完毕后关闭
-await client.close()
-```
+构建 RPC 端点 URL：`http://127.0.0.1:{local_port}/rpc`
 
-HTTP 会话使用 `aiohttp.ClientSession`，支持懒初始化和自动重建（如果会话已关闭）。
+#### `_rpc_call(local_port, method, params) -> dict`
 
-### RPC 端点
+使用给定方法和参数进行 JSON-RPC 调用。非流式调用使用 30 秒超时。如果响应包含错误，抛出 `DaemonError`；如果 HTTP 请求失败，抛出 `DaemonConnectionError`。
 
-所有请求发送到 `http://127.0.0.1:{local_port}/rpc`，其中 `local_port` 是 SSH 隧道的本地端口。
+### 会话管理方法
 
-## 方法列表
+#### `create_session(local_port, path, mode) -> str`
 
-### 会话管理
+在远程机器上创建新的 Claude 会话。
 
-#### create_session(local_port, path, mode) -> str
+- **参数：** `path`（项目目录）、`mode`（权限模式）
+- **返回：** `sessionId`（UUID 字符串）
 
-创建新的 Claude 会话。
+#### `send_message(local_port, session_id, message, idle_timeout) -> AsyncIterator[dict]`
 
-```python
-session_id = await client.create_session(19100, "/home/user/project", "auto")
-# 返回: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-```
+向 Claude 会话发送消息，通过 SSE 流式回传事件。
 
-#### send_message(local_port, session_id, message, idle_timeout) -> AsyncIterator
+这是与 Claude 交互的核心方法。它：
 
-发送消息并流式接收 Claude 的响应。返回异步迭代器，逐个产出 SSE 事件。
+1. 发送 `session.send` JSON-RPC 请求
+2. 将响应读取为 SSE 流（`text/event-stream`）
+3. 将每行 `data: {...}` 解析为 JSON
+4. 向调用方逐个产出解析后的事件字典
+5. 收到 `data: [DONE]` 时返回
 
-```python
-async for event in client.send_message(19100, session_id, "Hello Claude"):
-    if event["type"] == "partial":
-        print(event["content"], end="")  # 流式文本
-    elif event["type"] == "result":
-        print("Done!")
-```
+**超时行为：**
+- 总超时：15 分钟（900 秒）
+- 空闲超时（每次读取）：可配置，默认 300 秒（5 分钟）
+- 如果在空闲超时内未收到任何事件，产出一个错误事件
 
-**超时设置**：
-- 总超时：900 秒（15 分钟）
-- 空闲超时：`idle_timeout` 参数，默认 300 秒（5 分钟）。在每次收到事件时重置
-- 如果空闲超时触发，会产出一个 `error` 事件
+**错误处理：**
+- `asyncio.TimeoutError` -> 产出有关流空闲超时的错误事件
+- `aiohttp.ClientError` -> 产出连接错误事件
 
-**SSE 解析**：
-- 读取每一行，过滤空行
-- 解析 `data: ` 前缀的行
-- `data: [DONE]` 表示流结束
-- 每个 data 行被解析为 JSON 对象并产出
+#### `resume_session(local_port, session_id, sdk_session_id) -> dict`
 
-**错误处理**：
-- `asyncio.TimeoutError` → 产出 error 事件（空闲超时）
-- `aiohttp.ClientError` → 产出 error 事件（连接错误）
+恢复之前分离的会话。如果提供了 `sdk_session_id`，将传递给守护进程，用于未来 Claude 调用的 `--resume`。
 
-#### resume_session(local_port, session_id, sdk_session_id) -> dict
+返回包含 `ok`（bool）和 `fallback`（bool，表示是否创建了注入历史的新会话）的字典。
 
-恢复之前的会话。
+#### `destroy_session(local_port, session_id) -> bool`
 
-```python
-result = await client.resume_session(19100, "session-id", "sdk-session-id")
-# result = {"ok": True, "fallback": False}
-```
+销毁会话并终止任何正在运行的 Claude 进程。成功时返回 `True`。
 
-`sdk_session_id` 是可选的，如果提供，Daemon 会使用它来恢复完整的对话上下文。
+#### `list_sessions(local_port) -> list[dict]`
 
-#### destroy_session(local_port, session_id) -> bool
+列出远程守护进程上的所有会话。返回会话信息字典列表。
 
-销毁会话，终止关联的 Claude 进程。
+#### `set_mode(local_port, session_id, mode) -> bool`
 
-#### list_sessions(local_port) -> list[dict]
+设置会话的权限模式。成功时返回 `True`。
 
-列出远程 Daemon 上的所有会话。
+#### `interrupt_session(local_port, session_id) -> dict`
 
-#### set_mode(local_port, session_id, mode) -> bool
+通过向 Claude CLI 进程发送 SIGTERM 来中断会话的当前 Claude 操作。返回包含以下字段的字典：
+- `ok`（bool）：如果会话存在，始终为 `True`
+- `interrupted`（bool）：如果有活跃操作被中断则为 `True`
 
-设置会话的权限模式。
+#### `health_check(local_port) -> dict`
 
-#### interrupt_session(local_port, session_id) -> dict
+检查守护进程健康状态。返回会话数量、运行时间、内存使用情况、Node.js 版本和 PID。
 
-中断当前操作。向 Claude CLI 进程发送 SIGTERM 信号。
+#### `monitor_sessions(local_port) -> dict`
 
-```python
-result = await client.interrupt_session(19100, "session-id")
-# result = {"ok": True, "interrupted": True}
-# interrupted=True 表示确实有正在运行的操作被中断
-# interrupted=False 表示 Claude 当前空闲
-```
+获取所有会话的详细监控信息，包括队列统计。
 
-### 监控方法
+#### `reconnect_session(local_port, session_id) -> list[dict]`
 
-#### health_check(local_port) -> dict
+重新连接到会话，并检索在客户端断开期间生成的任何缓冲事件。
 
-检查 Daemon 健康状态。返回会话数、内存使用、运行时间等信息。
+#### `get_queue_stats(local_port, session_id) -> dict`
 
-#### monitor_sessions(local_port) -> dict
+获取会话的消息队列统计信息：待处理的用户消息、待处理的响应以及客户端连接状态。
 
-获取所有会话的详细监控信息，包括队列状态。
+### 清理
 
-### 连接恢复
+#### `close() -> None`
 
-#### reconnect_session(local_port, session_id) -> list[dict]
-
-重新连接到会话并获取在断连期间缓冲的事件。
-
-#### get_queue_stats(local_port, session_id) -> dict
-
-获取会话的消息队列统计信息。
-
-```python
-stats = await client.get_queue_stats(19100, "session-id")
-# stats = {"userPending": 0, "responsePending": 2, "clientConnected": True}
-```
+关闭底层的 aiohttp 会话。在 Head Node 关闭时调用。
 
 ## 异常类
 
-### DaemonError
+### `DaemonError`
 
-Daemon RPC 返回的业务错误。
+当守护进程在 JSON-RPC 结果中返回错误响应时抛出。
 
 ```python
 class DaemonError(Exception):
-    code: int      # 错误码
-    message: str   # 错误消息
+    code: int  # 来自守护进程的错误码
 ```
 
-当 RPC 响应包含 `error` 字段时抛出。
+### `DaemonConnectionError`
 
-### DaemonConnectionError
-
-无法连接到 Daemon。
-
-```python
-class DaemonConnectionError(Exception):
-    pass
-```
-
-当 HTTP 请求失败（网络错误、连接拒绝等）时抛出。通常表示 SSH 隧道已断开或 Daemon 未运行。
-
-## 内部实现
-
-### _rpc_call(local_port, method, params) -> dict
-
-底层 RPC 调用方法。
-
-```python
-# 请求格式
-{"method": "session.create", "params": {"path": "/home/user/project", "mode": "auto"}}
-
-# 成功响应
-{"result": {"sessionId": "..."}}
-
-# 错误响应
-{"error": {"code": -32602, "message": "Missing required param: path"}}
-```
-
-超时设置为 30 秒（适用于非流式请求）。
-
-### _get_session() -> aiohttp.ClientSession
-
-获取或创建 aiohttp 会话。如果现有会话已关闭，会创建新的。
+当到守护进程的 HTTP 连接失败（网络错误、连接被拒绝等）时抛出。
 
 ## 与其他模块的关系
 
-- **bot_base.py** — 调用所有 RPC 方法（create_session、send_message 等）
-- **main.py** — 实例化 `DaemonClient` 并在关闭时调用 `close()`
-- **session_router.py** — 提供 `daemon_session_id` 供 DaemonClient 使用
-- **ssh_manager.py** — 提供 `local_port` 供 DaemonClient 连接
+- **main.py** 创建 DaemonClient，并在关闭时调用 `close()`
+- **BotBase** 响应用户命令和消息转发时调用所有会话管理方法
+- **SSHManager** 提供映射到远程守护进程（通过 SSH 隧道）的 `local_port`

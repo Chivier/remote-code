@@ -1,78 +1,87 @@
-# Skill Manager (skill-manager.ts)
+# Skill Manager
 
-**File:** `daemon/src/skill-manager.ts`
+Skills sync is a two-stage process that spans both the Head Node and the Daemon. Understanding which component does what prevents confusion when debugging skill sync issues.
 
-Handles syncing CLAUDE.md and `.claude/skills/` files from a shared source directory to project directories on the remote machine.
+## Overview
 
-## Purpose
+Skills are shared instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) and skill documents (`.claude/skills/`, etc.) that provide Claude and other CLIs with reusable context for your projects.
 
-- Sync shared skills to project directories on session creation
-- Follow a "skillshare" model where a central source provides common skills
-- Avoid overwriting existing project-specific skills
+The sync pipeline works as follows:
 
-## Architecture
+```
+Local machine                     Remote machine
+─────────────────────             ─────────────────────────────────────
+~/.codecast/skills/          SCP  ~/.codecast/skills/
+  CLAUDE.md              ──────▶    CLAUDE.md
+  .claude/skills/                   .claude/skills/
+    coding-standards.md               coding-standards.md
 
-Skills flow through the system in two stages:
+                                     ▼ (on session.create)
 
-1. **Head Node -> Remote Machine**: The SSHManager on the Head Node copies skills from the local `skills.shared_dir` to `~/.codecast/skills` on the remote machine via SCP.
-2. **Remote Skills Dir -> Project**: The SkillManager on the daemon copies from `~/.codecast/skills` to the specific project directory when a session is created.
+                                  /home/user/project/
+                                    CLAUDE.md        (if not already present)
+                                    .claude/skills/
+                                      coding-standards.md
+```
 
-## Class: SkillManager
+## Stage 1: Head Node to Remote Machine (SSHManager)
 
-```typescript
-class SkillManager {
-    private skillsSourceDir: string;
-    // Default: ~/.codecast/skills
+**File:** `src/head/ssh_manager.py`
+**Method:** `sync_skills(machine_id)`
+
+When `cmd_start()` or `cmd_resume()` is called, the BotEngine calls `ssh.sync_skills()` to populate the remote machine's shared skills directory.
+
+The SSHManager copies from the local `skills.shared_dir` (configured in `config.yaml`, defaults to `~/.codecast/skills`) to `~/.codecast/skills` on the remote machine via SCP (asyncssh's `scp` support).
+
+This stage happens **once per session creation** (or on every connection, depending on configuration). It ensures the daemon's source directory is populated before any session starts.
+
+## Stage 2: Remote Skills Dir to Project (SkillManager in Rust)
+
+**File:** `src/daemon/skill_manager.rs`
+**Struct:** `SkillManager`
+
+When `session.create` is called, `server.rs` calls `skill_manager.sync_to_project(project_path, cli_type)`. This copies from `~/.codecast/skills` to the specific project directory.
+
+```rust
+pub struct SkillManager {
+    skills_source_dir: PathBuf,  // Default: ~/.codecast/skills
 }
 ```
 
-The source directory defaults to `~/.codecast/skills` (based on the `HOME` environment variable).
+### `sync_to_project(project_path, cli_type) -> SyncResult`
 
-## Key Methods
+Uses the `CliAdapter` to determine the correct file names for the target CLI:
 
-### `syncToProject(projectPath: string) -> { synced: string[], skipped: string[] }`
+```rust
+let adapter = create_adapter(cli_type);
+let instructions_file = adapter.instructions_file();  // "CLAUDE.md", "AGENTS.md", "GEMINI.md"
+let skills_dir = adapter.skills_dir();                // Some(".claude/skills/"), or None
+```
 
-Syncs skills from the shared source to a project directory. Called by `server.ts` during `session.create`.
+Then:
+1. Copies `{source}/{instructions_file}` to `{project}/{instructions_file}` — **only if the target does not already exist**
+2. If `skills_dir` is `Some`, recursively copies `{source}/{skills_dir}` to `{project}/{skills_dir}` — **skipping any file that already exists in the target**
 
-**Behavior:**
+Returns `SyncResult { synced: Vec<String>, skipped: Vec<String> }`.
 
-1. If the source directory doesn't exist, returns empty results (no error)
-2. **CLAUDE.md**: Copies `CLAUDE.md` from source to project root, but **only if it does not already exist** in the project. Existing project-specific `CLAUDE.md` files are never overwritten.
-3. **.claude/skills/**: Creates the target directory structure and recursively copies skill files, **skipping files that already exist** in the target.
-
-**Return value:**
-- `synced`: List of relative file paths that were copied
-- `skipped`: List of relative file paths that were skipped (with "(already exists)" suffix)
-
-### `listSharedSkills() -> string[]`
-
-Lists all skills available in the shared source directory. Returns file paths relative to the source.
-
-### `listProjectSkills(projectPath: string) -> string[]`
-
-Lists all skills present in a specific project directory. Returns file paths like `CLAUDE.md` and `.claude/skills/...`.
-
-## Private Methods
-
-### `copyDirRecursive(sourceDir, targetDir, synced, skipped)`
-
-Recursively copies files from source to target directory. Creates subdirectories as needed. For each file:
-- If target does not exist: copies the file, adds to `synced`
-- If target exists: skips, adds to `skipped`
-
-### `listFilesRecursive(dir, baseDir, result)`
-
-Recursively lists files in a directory, storing paths relative to the base directory.
-
-## No-Overwrite Policy
+### No-Overwrite Policy
 
 The SkillManager never overwrites existing files. This is a deliberate design choice:
 
-- Projects may have their own `CLAUDE.md` with project-specific instructions
-- Shared skills provide a baseline that projects can customize
-- After initial sync, the project's files take precedence
+- Projects may have their own `CLAUDE.md` with project-specific instructions that should take precedence
+- Shared skills provide a baseline; project-specific files override them
+- After initial sync, the project's customized files are preserved across new sessions
 
-## Example
+### Supported CLI Adapters
+
+| CLI type | Instructions file | Skills dir |
+|---|---|---|
+| `claude` | `CLAUDE.md` | `.claude/skills/` |
+| `codex` | `AGENTS.md` | (none) |
+| `gemini` | `GEMINI.md` | (none) |
+| `opencode` | `AGENTS.md` | (none) |
+
+### Example
 
 Given this source structure:
 
@@ -89,17 +98,27 @@ And this project state:
 
 ```
 /home/user/project/
-├── CLAUDE.md                    # Already exists -- won't be overwritten
+├── CLAUDE.md                    # Already exists — not overwritten
 └── .claude/
     └── skills/
-        └── coding-standards.md  # Already exists -- won't be overwritten
+        └── coding-standards.md  # Already exists — not overwritten
 ```
 
 Result:
 - `synced`: `[".claude/skills/review-checklist.md"]`
 - `skipped`: `["CLAUDE.md (already exists)", ".claude/skills/coding-standards.md (already exists)"]`
 
+## Debugging Skill Sync
+
+If skills are not appearing in a project:
+
+1. Confirm the local `~/.codecast/skills/` directory exists and contains the expected files
+2. After running `/start`, SSH into the remote machine and check `~/.codecast/skills/` — if empty, Stage 1 (SCP) failed
+3. If Stage 1 succeeded but the project directory is missing files, check the daemon logs for `sync_to_project` output — the files may already exist in the project (no-overwrite policy)
+4. To force-resync a specific file, delete it from the project directory on the remote machine and run `/start` again
+
 ## Connection to Other Modules
 
-- **server.ts** creates a single SkillManager instance and calls `syncToProject()` during `session.create`
-- The Head Node's **ssh_manager.py** is responsible for populating the skills source directory on the remote machine
+- **ssh_manager.py** (Head Node) is responsible for populating `~/.codecast/skills` on the remote machine
+- **server.rs** calls `skill_manager.sync_to_project()` during `session.create`
+- **cli_adapter/mod.rs** provides `instructions_file()` and `skills_dir()` per CLI type
