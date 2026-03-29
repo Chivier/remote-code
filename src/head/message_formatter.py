@@ -373,6 +373,39 @@ def format_tool_line(event: dict) -> str:
         return f"  `{tool}`"
 
 
+def format_ask_user_question(questions: list[dict]) -> list[tuple[str, list[str], bool]]:
+    """Parse AskUserQuestion input into (header, options, multi_select) tuples.
+
+    Args:
+        questions: List of question dicts from AskUserQuestion tool input.
+            Each has 'header', 'options' (list of dicts with 'description'),
+            and optionally 'multiSelect'.
+
+    Returns:
+        List of (header, option_descriptions, multi_select) tuples.
+    """
+    result = []
+    for q in questions:
+        header = q.get("header", "Question")
+        multi = q.get("multiSelect", False)
+        opts = [o.get("description", o.get("label", str(o))) for o in q.get("options", [])]
+        result.append((header, opts, multi))
+    return result
+
+
+def format_question_text(header: str, options: list[str], multi_select: bool = False) -> str:
+    """Format a question with numbered options as plain text.
+
+    Used as fallback when platform doesn't support inline buttons.
+    """
+    lines = [f"**{header}**"]
+    if multi_select:
+        lines.append("_(Select one or more — reply with numbers separated by commas)_")
+    for i, opt in enumerate(options, 1):
+        lines.append(f"  {i}. {opt}")
+    return "\n".join(lines)
+
+
 def _truncate(text: str, max_len: int) -> str:
     """Truncate text with ellipsis."""
     if len(text) <= max_len:

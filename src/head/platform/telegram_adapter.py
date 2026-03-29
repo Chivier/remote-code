@@ -11,9 +11,10 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
-from telegram import Update, Bot, BotCommand
+from telegram import Update, Bot, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     ContextTypes,
@@ -231,6 +232,57 @@ class TelegramAdapter:
             raw=msg,
         )
 
+    # --- Interactive Questions ---
+
+    async def send_question(
+        self,
+        channel_id: str,
+        header: str,
+        options: list[str],
+        multi_select: bool = False,
+    ) -> MessageHandle:
+        """Send an interactive question with inline keyboard buttons."""
+        if not self._bot:
+            return MessageHandle(platform="telegram", channel_id=channel_id, message_id="0")
+
+        chat_id = self._chat_id_from_channel(channel_id)
+
+        # Build inline keyboard — one button per row, prefixed with number
+        keyboard = []
+        for i, opt in enumerate(options, 1):
+            # callback_data is limited to 64 bytes; use index prefix
+            label = f"{i}. {opt}"
+            if len(label) > 60:
+                label = label[:57] + "..."
+            cb_data = f"askq:{i}:{opt[:50]}"
+            keyboard.append([InlineKeyboardButton(label, callback_data=cb_data)])
+
+        markup = InlineKeyboardMarkup(keyboard)
+
+        # Build header text
+        text = f"<b>{header}</b>"
+        if multi_select:
+            text += "\n<i>(Select one or more)</i>"
+
+        try:
+            msg = await self._bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=markup,
+            )
+        except Exception:
+            # Fallback without HTML
+            plain = f"{header}\n" + "\n".join(f"  {i}. {o}" for i, o in enumerate(options, 1))
+            msg = await self._bot.send_message(chat_id=chat_id, text=plain, reply_markup=markup)
+
+        return MessageHandle(
+            platform="telegram",
+            channel_id=channel_id,
+            message_id=str(msg.message_id),
+            raw=msg,
+        )
+
     # --- Interaction State ---
 
     async def start_typing(self, channel_id: str) -> None:
@@ -276,7 +328,7 @@ class TelegramAdapter:
         return True
 
     def supports_inline_buttons(self) -> bool:
-        return False
+        return True
 
     def supports_file_upload(self) -> bool:
         return True
@@ -346,6 +398,9 @@ class TelegramAdapter:
                 self._handle_telegram_message,
             )
         )
+
+        # Handle inline keyboard button clicks (AskUserQuestion responses)
+        self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
 
         # Register command menu
         try:
@@ -429,6 +484,45 @@ class TelegramAdapter:
             cmd = cmd.split("@")[0]
             return f"{cmd} {rest}".strip() if rest else cmd
         return text
+
+    async def _handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle inline keyboard button clicks (AskUserQuestion responses)."""
+        query = update.callback_query
+        if not query or not query.data:
+            return
+
+        user = update.effective_user
+        if not user or not self._is_allowed_user(user.id):
+            await query.answer("Not authorized")
+            return
+
+        chat = update.effective_chat
+        chat_id = chat.id if chat else 0
+        channel_id = self._channel_id(chat_id)
+
+        # Parse callback data: "askq:<index>:<option_text>"
+        data = query.data
+        if data.startswith("askq:"):
+            parts = data.split(":", 2)
+            if len(parts) >= 3:
+                option_text = parts[2]
+            else:
+                option_text = data
+
+            # Acknowledge the button press
+            await query.answer(f"Selected: {option_text[:50]}")
+
+            # Edit the message to show selection (remove buttons)
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+            # Forward the selection as a user message to the session
+            if self._on_input:
+                await self._on_input(channel_id, option_text, user.id, None)
+        else:
+            await query.answer()
 
     async def _handle_telegram_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming Telegram messages."""

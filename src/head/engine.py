@@ -42,6 +42,8 @@ from .message_formatter import (
     format_health,
     format_monitor,
     display_mode,
+    format_ask_user_question,
+    format_question_text,
 )
 from .file_forward import FileForwardMatcher, ForwardDecision
 from .platform.protocol import PlatformAdapter, MessageHandle, FileAttachment
@@ -1466,6 +1468,42 @@ After `/start` or `/resume`, send any message to interact with Claude."""
                     f"Detected file: `{path}` — {decision.reason}",
                 )
 
+    async def _handle_ask_user_question(self, channel_id: str, event: dict) -> None:
+        """Handle AskUserQuestion tool_use events with interactive display.
+
+        Parses the question input and presents it using platform-native
+        interactive elements (inline keyboard, buttons, etc.) when supported,
+        or falls back to numbered text options.
+        """
+        input_data = event.get("input", {})
+        if isinstance(input_data, str):
+            import json as _json
+            try:
+                input_data = _json.loads(input_data)
+            except (ValueError, TypeError):
+                input_data = {}
+
+        questions = input_data.get("questions", [])
+        if not questions:
+            # Fallback: just show the raw event
+            await self.send_message(channel_id, format_tool_use(event))
+            return
+
+        parsed = format_ask_user_question(questions)
+        for header, options, multi_select in parsed:
+            if options and hasattr(self.adapter, "send_question"):
+                try:
+                    await self.adapter.send_question(
+                        channel_id, header, options, multi_select
+                    )
+                except Exception:
+                    # Fallback to text if send_question fails
+                    text = format_question_text(header, options, multi_select)
+                    await self.send_message(channel_id, text)
+            else:
+                text = format_question_text(header, options, multi_select)
+                await self.send_message(channel_id, text)
+
     async def _forward_message(
         self,
         channel_id: str,
@@ -1547,6 +1585,11 @@ After `/start` or `/resume`, send any message to interact with Claude."""
                     event_type = event.get("type", "")
 
                     if event_type == "ping":
+                        continue
+
+                    # AskUserQuestion — present interactively regardless of display mode
+                    if event_type == "tool_use" and event.get("tool") == "AskUserQuestion":
+                        await self._handle_ask_user_question(channel_id, event)
                         continue
 
                     # tool_use / partial — silently consumed, just ensure timer is running
@@ -1650,6 +1693,11 @@ After `/start` or `/resume`, send any message to interact with Claude."""
                                 await self.adapter.delete_message(activity_msg)
                             except Exception:
                                 pass
+                    elif activity_lines:
+                        # Lines accumulated but debounce prevented message creation — send now
+                        final = format_activity_message(activity_lines, "", cursor=False)
+                        if final.strip():
+                            await self.send_message(channel_id, final)
                     activity_msg = None
                     activity_lines = []
 
@@ -1662,6 +1710,11 @@ After `/start` or `/resume`, send any message to interact with Claude."""
                             await self.send_message(channel_id, summary)
                         batch_lines = []
 
+                # Track last tool name for dedup (content_block_start emits
+                # bare tool name, then assistant emits name+input — skip the bare one
+                # if a detailed version arrives for the same tool).
+                last_pending_tool: Optional[str] = None
+
                 async for event in self.daemon.send_message(local_port, session.daemon_session_id, text):
                     if channel_id in self._stop_requested:
                         break
@@ -1671,14 +1724,33 @@ After `/start` or `/resume`, send any message to interact with Claude."""
                     if event_type == "ping":
                         continue
 
+                    # AskUserQuestion — present interactively regardless of display mode
+                    if event_type == "tool_use" and event.get("tool") == "AskUserQuestion":
+                        await self._handle_ask_user_question(channel_id, event)
+                        continue
+
                     if event_type == "tool_use":
-                        line = format_tool_line(event)
+                        tool_name = event.get("tool", "unknown")
+                        has_detail = bool(event.get("input") or event.get("message"))
                         thinking_buf = ""
+
+                        if not has_detail:
+                            # Bare tool name from content_block_start — just remember it,
+                            # don't emit a line yet (the detailed version will follow).
+                            last_pending_tool = tool_name
+                            continue
+
+                        # Detailed tool_use — clear the pending bare entry
+                        last_pending_tool = None
+                        line = format_tool_line(event)
                         if tool_display == "batch":
                             batch_lines.append(line)
                         else:
                             activity_lines.append(line)
-                            await update_activity()
+                            # Always create the message on first tool; debounce subsequent edits
+                            now = time.time()
+                            if activity_msg is None or now - last_activity_update >= STREAM_UPDATE_INTERVAL:
+                                await update_activity()
 
                     elif event_type == "partial":
                         content = event.get("content", "")

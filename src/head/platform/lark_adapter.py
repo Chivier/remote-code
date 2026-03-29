@@ -304,6 +304,28 @@ class LarkAdapter:
             logger.error(f"Error sending Lark file: {e}")
             raise
 
+    # --- Interactive Questions ---
+
+    async def send_question(
+        self,
+        channel_id: str,
+        header: str,
+        options: list[str],
+        multi_select: bool = False,
+    ) -> MessageHandle:
+        """Send a question with numbered options as a Lark post message.
+
+        Lark interactive cards require a separate card callback registration
+        which isn't available via the WebSocket event handler. Use numbered
+        text options instead — the user replies with a number or the option text.
+        """
+        lines = [f"**{header}**"]
+        if multi_select:
+            lines.append("_(Select one or more — reply with numbers separated by commas)_")
+        for i, opt in enumerate(options, 1):
+            lines.append(f"  {i}. {opt}")
+        return await self.send_message(channel_id, "\n".join(lines))
+
     # --- Interaction State ---
 
     async def start_typing(self, channel_id: str) -> None:

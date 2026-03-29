@@ -80,7 +80,7 @@ class TestTelegramAdapterProperties:
 
     def test_supports_inline_buttons(self):
         adapter = TelegramAdapter(make_config())
-        assert adapter.supports_inline_buttons() is False
+        assert adapter.supports_inline_buttons() is True
 
     def test_supports_file_upload(self):
         adapter = TelegramAdapter(make_config())

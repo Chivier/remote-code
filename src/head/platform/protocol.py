@@ -78,6 +78,24 @@ class PlatformAdapter(Protocol):
         """Stop showing typing indicator in a channel."""
         ...
 
+    # --- Interactive Questions ---
+    async def send_question(
+        self,
+        channel_id: str,
+        header: str,
+        options: list[str],
+        multi_select: bool = False,
+    ) -> MessageHandle:
+        """Send an interactive question with selectable options.
+
+        Platforms that support inline buttons/keyboards should present options
+        as clickable buttons. Others should fall back to a numbered list.
+
+        When the user selects an option, the adapter should invoke the input
+        handler with the selected option text as the message.
+        """
+        ...
+
     # --- Capability Queries ---
     def supports_message_edit(self) -> bool:
         """Whether this platform supports editing sent messages."""

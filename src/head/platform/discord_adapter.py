@@ -47,6 +47,63 @@ HEARTBEAT_INTERVAL = 30
 STREAM_BUFFER_FLUSH_SIZE = 1800
 
 
+class _AskUserQuestionView(discord.ui.View):
+    """Discord interactive view for AskUserQuestion responses."""
+
+    def __init__(
+        self,
+        options: list[str],
+        multi_select: bool,
+        on_input: Optional[InputHandler],
+        channel_id: str,
+    ):
+        super().__init__(timeout=300)  # 5 min timeout
+        self._on_input = on_input
+        self._channel_id = channel_id
+
+        if len(options) <= 5:
+            # Use buttons for <=5 options
+            for i, opt in enumerate(options, 1):
+                label = f"{i}. {opt}"
+                if len(label) > 80:
+                    label = label[:77] + "..."
+                btn = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, row=i - 1)
+                btn.callback = self._make_callback(opt)
+                self.add_item(btn)
+        else:
+            # Use select menu for >5 options
+            select_options = []
+            for i, opt in enumerate(options, 1):
+                label = f"{i}. {opt}"
+                if len(label) > 100:
+                    label = label[:97] + "..."
+                select_options.append(discord.SelectOption(label=label, value=opt[:100]))
+            select = discord.ui.Select(
+                placeholder="Select an option...",
+                options=select_options,
+                max_values=len(options) if multi_select else 1,
+            )
+            select.callback = self._select_callback
+            self.add_item(select)
+
+    def _make_callback(self, option_text: str):
+        async def callback(interaction: discord.Interaction):
+            await interaction.response.edit_message(view=None)
+            if self._on_input:
+                await self._on_input(self._channel_id, option_text, interaction.user.id, None)
+            self.stop()
+        return callback
+
+    async def _select_callback(self, interaction: discord.Interaction):
+        select = interaction.data.get("values", [])
+        if select:
+            response_text = ", ".join(select)
+            await interaction.response.edit_message(view=None)
+            if self._on_input:
+                await self._on_input(self._channel_id, response_text, interaction.user.id, None)
+        self.stop()
+
+
 class DiscordAdapter:
     """
     Discord adapter implementing PlatformAdapter protocol.
@@ -128,7 +185,7 @@ class DiscordAdapter:
         return True
 
     def supports_inline_buttons(self) -> bool:
-        return False
+        return True
 
     def supports_file_upload(self) -> bool:
         return True
@@ -214,6 +271,46 @@ class DiscordAdapter:
             channel_id=channel_id,
             message_id="0",
         )
+
+    async def send_question(
+        self,
+        channel_id: str,
+        header: str,
+        options: list[str],
+        multi_select: bool = False,
+    ) -> MessageHandle:
+        """Send an interactive question with Discord buttons."""
+        channel = self._channels.get(channel_id)
+        if not channel:
+            return MessageHandle(platform="discord", channel_id=channel_id, message_id="0")
+
+        # Build a View with buttons (or Select if many options)
+        view = _AskUserQuestionView(
+            options=options,
+            multi_select=multi_select,
+            on_input=self._on_input,
+            channel_id=channel_id,
+        )
+
+        text_content = f"**{header}**"
+        if multi_select:
+            text_content += "\n*(Select one or more)*"
+
+        try:
+            msg = await channel.send(text_content, view=view)
+            return MessageHandle(
+                platform="discord",
+                channel_id=channel_id,
+                message_id=str(msg.id),
+                raw=msg,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send question with buttons: {e}")
+            # Fallback to numbered text
+            lines = [f"**{header}**"]
+            for i, opt in enumerate(options, 1):
+                lines.append(f"  {i}. {opt}")
+            return await self.send_message(channel_id, "\n".join(lines))
 
     async def edit_message(self, handle: MessageHandle, text: str) -> None:
         """Edit an existing Discord message using its MessageHandle."""
